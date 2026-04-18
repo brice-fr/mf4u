@@ -1,0 +1,31 @@
+# ── Node / SvelteKit ──────────────────────────────────────────────────────
+.DS_Store
+node_modules/
+/build
+/.svelte-kit
+/package
+.env
+.env.*
+!.env.example
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# ── Rust / Tauri ──────────────────────────────────────────────────────────
+src-tauri/target/
+src-tauri/gen/android/
+src-tauri/gen/apple/
+
+# Built sidecar binaries (produced by PyInstaller in CI or local dev).
+# Track the directory itself via .gitkeep; ignore the actual executables.
+src-tauri/binaries/*
+!src-tauri/binaries/.gitkeep
+
+# ── Python sidecar ────────────────────────────────────────────────────────
+sidecar/__pycache__/
+sidecar/*.pyc
+sidecar/dist/
+sidecar/build/
+sidecar/*.spec
+
+# ── OS artefacts ─────────────────────────────────────────────────────────
+Thumbs.db

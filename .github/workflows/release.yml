@@ -1,0 +1,261 @@
+name: Release
+
+# ─── Triggers ────────────────────────────────────────────────────────────────
+# Automatic:  push a tag like  v0.2.0
+# Manual:     Actions → "Release" → Run workflow (enter the tag)
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag (e.g. v0.1.0)'
+        required: true
+        default: 'v0.1.0'
+
+permissions:
+  contents: write   # required to create / update GitHub Releases
+
+# ─── REQUIRED SECRETS (Settings → Secrets and variables → Actions) ───────────
+#
+#   macOS code-signing & notarization
+#   ─────────────────────────────────
+#   APPLE_CERTIFICATE          base64-encoded Developer ID Application .p12
+#                              Produce with:
+#                                openssl base64 -in cert.p12 | tr -d '\n' | pbcopy
+#   APPLE_CERTIFICATE_PASSWORD password used when exporting the .p12 from Keychain
+#   APPLE_SIGNING_IDENTITY     full identity string, e.g.
+#                                "Developer ID Application: Firstname Lastname (AB12CD34EF)"
+#   APPLE_ID                   Apple ID email used for notarization
+#   APPLE_PASSWORD             app-specific password (appleid.apple.com → Security)
+#   APPLE_TEAM_ID              10-character team ID (developer.apple.com → Membership)
+#   KEYCHAIN_PASSWORD          any random secret string; used for the temp CI keychain
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+env:
+  PYTHON_VERSION: '3.12'
+  NODE_VERSION: '20'
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Job 1a — Python sidecar · macOS arm64
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+  sidecar-macos-arm64:
+    runs-on: macos-14    # Apple Silicon runner
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies & build sidecar (arm64)
+        run: |
+          pip install --upgrade pip
+          pip install -r sidecar/requirements.txt pyinstaller
+          cd sidecar
+          pyinstaller --onefile --clean \
+            --name mf4u_sidecar \
+            --collect-all asammdf \
+            --collect-all canmatrix \
+            __main__.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidecar-macos-arm64
+          path: sidecar/dist/mf4u_sidecar
+          retention-days: 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Job 1b — Python sidecar · macOS x86_64
+# ─────────────────────────────────────────────────────────────────────────────
+  sidecar-macos-x86_64:
+    runs-on: macos-13    # Intel runner
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies & build sidecar (x86_64)
+        run: |
+          pip install --upgrade pip
+          pip install -r sidecar/requirements.txt pyinstaller
+          cd sidecar
+          pyinstaller --onefile --clean \
+            --name mf4u_sidecar \
+            --collect-all asammdf \
+            --collect-all canmatrix \
+            __main__.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidecar-macos-x86_64
+          path: sidecar/dist/mf4u_sidecar
+          retention-days: 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Job 2 — macOS universal app · sign · notarize · publish
+# ─────────────────────────────────────────────────────────────────────────────
+  release-macos:
+    needs: [sidecar-macos-arm64, sidecar-macos-x86_64]
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Assemble universal sidecar from the two per-arch binaries ──────────
+      - uses: actions/download-artifact@v4
+        with:
+          name: sidecar-macos-arm64
+          path: /tmp/sidecar-arm64
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sidecar-macos-x86_64
+          path: /tmp/sidecar-x86_64
+
+      - name: Create universal sidecar with lipo
+        run: |
+          mkdir -p src-tauri/binaries
+          chmod +x /tmp/sidecar-arm64/mf4u_sidecar /tmp/sidecar-x86_64/mf4u_sidecar
+          lipo -create \
+            /tmp/sidecar-arm64/mf4u_sidecar \
+            /tmp/sidecar-x86_64/mf4u_sidecar \
+            -output src-tauri/binaries/mf4u_sidecar-universal-apple-darwin
+          chmod +x src-tauri/binaries/mf4u_sidecar-universal-apple-darwin
+          lipo -info src-tauri/binaries/mf4u_sidecar-universal-apple-darwin
+
+      # ── Import Developer ID certificate into a temporary CI keychain ───────
+      - name: Import Apple certificate
+        env:
+          APPLE_CERTIFICATE:          ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD:          ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          CERT_PATH="$RUNNER_TEMP/certificate.p12"
+          KC_PATH="$RUNNER_TEMP/build.keychain-db"
+
+          echo "$APPLE_CERTIFICATE" | base64 --decode -o "$CERT_PATH"
+
+          security create-keychain        -p "$KEYCHAIN_PASSWORD" "$KC_PATH"
+          security set-keychain-settings  -lut 21600 "$KC_PATH"
+          security unlock-keychain        -p "$KEYCHAIN_PASSWORD" "$KC_PATH"
+          security import "$CERT_PATH" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KC_PATH"
+          security set-key-partition-list \
+            -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KC_PATH"
+          security list-keychain -d user -s "$KC_PATH"
+
+      # ── Write a CI-only Tauri config overlay (signing + notarisation) ──────
+      # This keeps tauri.conf.json clean for local dev where no certs exist.
+      - name: Write macOS CI config overlay
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID:          ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          cat > /tmp/tauri-macos.conf.json << JSON
+          {
+            "bundle": {
+              "macOS": {
+                "signingIdentity": "${APPLE_SIGNING_IDENTITY}",
+                "notarize": { "teamId": "${APPLE_TEAM_ID}" }
+              }
+            }
+          }
+          JSON
+
+      # ── Toolchain setup ─────────────────────────────────────────────────────
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # ── Build · sign · notarise · publish to GitHub Release ─────────────────
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN:           ${{ secrets.GITHUB_TOKEN }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID:               ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD:         ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID:          ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName:     ${{ github.ref_name || github.event.inputs.tag_name }}
+          releaseName: 'mf4u v__VERSION__'
+          releaseBody: |
+            ## mf4u v__VERSION__
+
+            **macOS** — download `mf4u_universal.dmg` — runs natively on Apple Silicon and Intel.
+            **Windows** — download `mf4u_x64-setup.exe` — NSIS installer.
+          releaseDraft: true
+          prerelease:  false
+          args: >-
+            --target universal-apple-darwin
+            --config /tmp/tauri-macos.conf.json
+
+      # ── Always remove the temporary keychain ────────────────────────────────
+      - name: Clean up keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/build.keychain-db" || true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Job 3 — Windows x86_64 · NSIS installer · publish
+# ─────────────────────────────────────────────────────────────────────────────
+  release-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies & build sidecar (Windows x86_64)
+        shell: pwsh
+        run: |
+          pip install --upgrade pip
+          pip install -r sidecar/requirements.txt pyinstaller
+          Set-Location sidecar
+          pyinstaller --onefile --clean `
+            --name mf4u_sidecar `
+            --collect-all asammdf `
+            --collect-all canmatrix `
+            __main__.py
+
+      - name: Copy sidecar to binaries
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path src-tauri/binaries | Out-Null
+          Copy-Item sidecar/dist/mf4u_sidecar.exe `
+            src-tauri/binaries/mf4u_sidecar-x86_64-pc-windows-msvc.exe
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName:     ${{ github.ref_name || github.event.inputs.tag_name }}
+          releaseName: 'mf4u v__VERSION__'
+          releaseDraft: true
+          prerelease:  false

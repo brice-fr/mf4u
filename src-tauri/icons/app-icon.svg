@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <!-- Background: deep dark navy -->
+    <linearGradient id="bg" x1="0" y1="0" x2="0.4" y2="1" gradientUnits="objectBoundingBox">
+      <stop offset="0%"   stop-color="#131a24"/>
+      <stop offset="100%" stop-color="#0b1018"/>
+    </linearGradient>
+    <!-- Subtle blue radial glow behind the "u" -->
+    <radialGradient id="uglow" cx="74%" cy="55%" r="28%" gradientUnits="objectBoundingBox">
+      <stop offset="0%"   stop-color="#6c9ef8" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#6c9ef8" stop-opacity="0"/>
+    </radialGradient>
+    <!-- Clip to rounded-rectangle shape -->
+    <clipPath id="clip">
+      <rect width="1024" height="1024" rx="210"/>
+    </clipPath>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1024" height="1024" rx="210" fill="url(#bg)"/>
+
+  <g clip-path="url(#clip)">
+    <!-- Glow wash behind "u" -->
+    <rect width="1024" height="1024" fill="url(#uglow)"/>
+
+    <!-- Wordmark centered at 512, 582 -->
+    <!--
+      Rendered at 372px bold sans-serif, "mf4u" spans roughly 850 px.
+      tspan lets us colour each part independently.
+    -->
+    <text
+      x="512" y="582"
+      text-anchor="middle"
+      font-family="'Helvetica Neue', 'Arial', -apple-system, sans-serif"
+      font-size="372"
+      font-weight="800"
+      letter-spacing="-14">
+      <tspan fill="#dce6f5">mf4</tspan><tspan fill="#6c9ef8">u</tspan>
+    </text>
+
+    <!-- Thin horizontal accent line -->
+    <rect x="148" y="722" width="728" height="7" rx="3.5" fill="#6c9ef8" opacity="0.28"/>
+  </g>
+</svg>
