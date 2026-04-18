@@ -11,16 +11,18 @@
     onclose: () => void;
   } = $props();
 
-  type Fmt = "tdms" | "mat";
+  type Fmt = "tdms" | "mat" | "parquet";
   let format: Fmt       = $state("tdms");
   let outputPath        = $state("");
   let jobId = $state(null as string | null);
   let job   = $state(null as ExportJob | null);
   let pollTimer: ReturnType<typeof setInterval> | null = null;
 
-  const FMT_META: Record<Fmt, { label: string; ext: string }> = {
-    tdms: { label: "NI TDMS (.tdms)", ext: "tdms" },
-    mat:  { label: "MATLAB (.mat)",   ext: "mat"  },
+  const FMT_META: Record<Fmt, { label: string; ext: string; hint?: string }> = {
+    tdms:    { label: "NI TDMS (.tdms)",       ext: "tdms" },
+    mat:     { label: "MATLAB (.mat)",          ext: "mat"  },
+    parquet: { label: "Apache Parquet (.parquet)", ext: "parquet",
+               hint: "One .parquet file per channel group when multiple groups are present." },
   };
 
   async function browse() {
@@ -118,7 +120,7 @@
     <div class="field">
       <span class="field-label">Format</span>
       <div class="radio-group">
-        {#each (["tdms", "mat"] as Fmt[]) as f}
+        {#each (["tdms", "mat", "parquet"] as Fmt[]) as f}
           <label class="radio" class:active={format === f}>
             <input
               type="radio"
@@ -148,6 +150,9 @@
         />
         <button class="browse-btn" onclick={browse} disabled={isRunning}>Browse…</button>
       </div>
+      {#if FMT_META[format].hint}
+        <p class="field-hint">{FMT_META[format].hint}</p>
+      {/if}
     </div>
 
     <!-- ── progress area ── -->
@@ -314,6 +319,13 @@
   }
   .browse-btn:hover:not(:disabled) { border-color: #6c9ef8; }
   .browse-btn:disabled { opacity: 0.4; cursor: default; }
+
+  .field-hint {
+    margin: 0;
+    font-size: 0.72rem;
+    color: #555;
+    line-height: 1.4;
+  }
 
   /* ── progress area ── */
   .progress-area {

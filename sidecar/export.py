@@ -18,14 +18,15 @@ from typing import Any
 # --------------------------------------------------------------------------- #
 
 class _Job:
-    __slots__ = ("total", "done", "status", "error", "_cancel")
+    __slots__ = ("total", "done", "status", "error", "_cancel", "_cleanup")
 
     def __init__(self, total: int) -> None:
-        self.total   = total
-        self.done    = 0
-        self.status  = "running"          # running | done | error | cancelled
+        self.total    = total
+        self.done     = 0
+        self.status   = "running"         # running | done | error | cancelled
         self.error: str | None = None
-        self._cancel = threading.Event()
+        self._cancel  = threading.Event()
+        self._cleanup: list[str] = []     # files to remove on cancel / error
 
     @property
     def cancel_requested(self) -> bool:
@@ -54,19 +55,25 @@ def start(mdf: Any, fmt: str, output_path: str) -> str:
                 _do_mat(mdf, output_path, job)
             elif fmt == "tdms":
                 _do_tdms(mdf, output_path, job)
+            elif fmt == "parquet":
+                _do_parquet(mdf, output_path, job)
             else:
                 job.error  = f"unsupported format: {fmt!r}"
                 job.status = "error"
                 return
+            # Determine which files to remove on cancel / error
+            to_delete = job._cleanup if job._cleanup else [output_path]
             if job.cancel_requested:
-                _delete(output_path)
+                for p in to_delete:
+                    _delete(p)
                 # status was already set to "cancelled" in cancel()
             else:
                 job.status = "done"
         except Exception as exc:   # noqa: BLE001
             job.error  = str(exc)
             job.status = "error"
-            _delete(output_path)
+            for p in (job._cleanup if job._cleanup else [output_path]):
+                _delete(p)
 
     threading.Thread(target=_run, daemon=True).start()
     return job_id
@@ -171,6 +178,110 @@ def _do_tdms(mdf: Any, output_path: str, job: _Job) -> None:
                 writer.write_segment(channels)
 
             job.done = i + 1
+
+
+# --------------------------------------------------------------------------- #
+# .parquet export
+# --------------------------------------------------------------------------- #
+
+def _do_parquet(mdf: Any, output_path: str, job: _Job) -> None:
+    """
+    Write one Parquet file per non-empty channel group.
+
+    • Single non-empty group  → written to *output_path* exactly.
+    • Multiple non-empty groups → written to
+        ``{stem}_g{i:02d}_{safe_acq_name}.parquet``
+      where *stem* is *output_path* with the ``.parquet`` suffix stripped.
+
+    Each file contains a ``timestamps`` column (float64 seconds) followed by
+    one column per channel.  Columns that cannot be converted to an Arrow
+    array are silently skipped.  All arrays are truncated to the shortest
+    length in the group to guarantee a rectangular table.
+    """
+    try:
+        import pyarrow as pa            # type: ignore[import-untyped]
+        import pyarrow.parquet as pq    # type: ignore[import-untyped]
+    except ImportError as exc:
+        raise RuntimeError(
+            f"pyarrow is required for Parquet export: {exc}"
+        ) from exc
+
+    from pathlib import Path
+
+    base = Path(output_path)
+    stem = base.with_suffix("")   # strip .parquet for multi-file naming
+
+    non_empty_count = sum(1 for g in mdf.groups if g.channels)
+    single_file     = non_empty_count <= 1
+
+    for i, group in enumerate(mdf.groups):
+        if job.cancel_requested:
+            return
+
+        if not group.channels:
+            job.done = i + 1
+            continue
+
+        cg       = group.channel_group
+        grp_name = (str(getattr(cg, "acq_name", "") or "").strip()
+                    or f"group_{i}")
+
+        # ── collect raw numpy arrays ────────────────────────────────────────
+        timestamps_arr = None
+        columns: dict[str, Any] = {}
+
+        for ch in group.channels:
+            ch_name = str(ch.name or "")
+            if not ch_name:
+                continue
+            try:
+                sig = mdf.get(ch_name, group=i, raw=False,
+                              ignore_invalidation_bits=True)
+                if timestamps_arr is None and sig.timestamps is not None:
+                    timestamps_arr = sig.timestamps
+                columns[ch_name] = sig.samples
+            except Exception:  # noqa: BLE001
+                pass
+
+        if not columns:
+            job.done = i + 1
+            continue
+
+        # ── align lengths ───────────────────────────────────────────────────
+        all_arrs = list(columns.values())
+        if timestamps_arr is not None:
+            all_arrs.append(timestamps_arr)
+        min_len = min(len(a) for a in all_arrs)
+
+        # ── build Arrow table ───────────────────────────────────────────────
+        arrow_cols: dict[str, Any] = {}
+        if timestamps_arr is not None:
+            arrow_cols["timestamps"] = pa.array(
+                timestamps_arr[:min_len], type=pa.float64()
+            )
+        for col_name, arr in columns.items():
+            try:
+                arrow_cols[col_name] = pa.array(arr[:min_len])
+            except Exception:  # noqa: BLE001
+                pass  # skip unconvertible columns (e.g. structured dtypes)
+
+        if not arrow_cols:
+            job.done = i + 1
+            continue
+
+        table = pa.table(arrow_cols)
+
+        # ── resolve output path ─────────────────────────────────────────────
+        if single_file:
+            out_file = str(base)
+        else:
+            safe = re.sub(r"[^\w\-]", "_", grp_name)[:40].strip("_") or f"g{i}"
+            out_file = str(Path(f"{stem}_g{i:02d}_{safe}.parquet"))
+
+        job._cleanup.append(out_file)
+        pq.write_table(table, out_file, compression="snappy")
+
+        job.done = i + 1
 
 
 # --------------------------------------------------------------------------- #
