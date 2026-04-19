@@ -127,15 +127,27 @@ jobs:
           name: sidecar-macos-x86_64
           path: /tmp/sidecar-x86_64
 
-      - name: Create universal sidecar with lipo
+      - name: Assemble sidecar binaries for universal build
         run: |
           mkdir -p src-tauri/binaries
           chmod +x /tmp/sidecar-arm64/mf4u_sidecar /tmp/sidecar-x86_64/mf4u_sidecar
+
+          # Tauri compiles each arch slice independently before merging.
+          # Each slice resolves the sidecar by its own target triple, so we
+          # must provide the arch-specific copies as well as the universal one.
+          cp /tmp/sidecar-arm64/mf4u_sidecar \
+             src-tauri/binaries/mf4u_sidecar-aarch64-apple-darwin
+          cp /tmp/sidecar-x86_64/mf4u_sidecar \
+             src-tauri/binaries/mf4u_sidecar-x86_64-apple-darwin
+
           lipo -create \
             /tmp/sidecar-arm64/mf4u_sidecar \
             /tmp/sidecar-x86_64/mf4u_sidecar \
             -output src-tauri/binaries/mf4u_sidecar-universal-apple-darwin
-          chmod +x src-tauri/binaries/mf4u_sidecar-universal-apple-darwin
+
+          chmod +x src-tauri/binaries/mf4u_sidecar-aarch64-apple-darwin \
+                   src-tauri/binaries/mf4u_sidecar-x86_64-apple-darwin \
+                   src-tauri/binaries/mf4u_sidecar-universal-apple-darwin
           lipo -info src-tauri/binaries/mf4u_sidecar-universal-apple-darwin
 
       # ── Import Developer ID certificate into a temporary CI keychain ───────
