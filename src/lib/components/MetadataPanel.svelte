@@ -45,6 +45,13 @@
     },
   ]);
 
+  // Recording card — only shown when at least one HD text field is present
+  const recordingRows = $derived(
+    (["author", "subject", "project", "department"] as const)
+      .map((k) => ({ label: k.charAt(0).toUpperCase() + k.slice(1), value: meta[k] }))
+      .filter((r) => r.value),
+  );
+
   // Ordered display list for bus frame counts — only types present in the file
   const BUS_ORDER = ["CAN", "CAN FD", "LIN", "MOST", "FlexRay", "Ethernet", "K-Line", "USB"];
   const busRows = $derived(
@@ -70,6 +77,19 @@
       </dl>
     </div>
   {/each}
+
+  <!-- recording info — author / subject / project / department -->
+  {#if recordingRows.length > 0}
+    <div class="group">
+      <h3>Recording</h3>
+      <dl>
+        {#each recordingRows as { label, value }}
+          <dt>{label}</dt>
+          <dd title={value}>{value}</dd>
+        {/each}
+      </dl>
+    </div>
+  {/if}
 
   <!-- bus frames — one row per detected type -->
   {#if busRows.length > 0}

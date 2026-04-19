@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Dev-mode wrapper: runs the Python sidecar source directly.
+# Auto-selects the project venv (sidecar/.venv) if it exists;
+# falls back to the system python3 otherwise.
+#
+# Tauri copies this script to src-tauri/target/debug/ before running it,
+# so SCRIPT_DIR is NOT the project root.  We walk upward until we find
+# sidecar/__main__.py to locate the real project root.
+#
+# In release builds this file is replaced by a PyInstaller-frozen binary.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+PROJECT_ROOT=""
+dir="$SCRIPT_DIR"
+while [ "$dir" != "/" ]; do
+    if [ -f "$dir/sidecar/__main__.py" ]; then
+        PROJECT_ROOT="$dir"
+        break
+    fi
+    dir="$(cd "$dir/.." && pwd)"
+done
+
+if [ -z "$PROJECT_ROOT" ]; then
+    echo '{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"dev wrapper: could not find project root (sidecar/__main__.py not found)"}}'
+    exit 1
+fi
+
+SIDECAR_MAIN="$PROJECT_ROOT/sidecar/__main__.py"
+VENV_PYTHON="$PROJECT_ROOT/sidecar/.venv/bin/python3"
+
+if [ -x "$VENV_PYTHON" ]; then
+    exec "$VENV_PYTHON" "$SIDECAR_MAIN" "$@"
+else
+    exec python3 "$SIDECAR_MAIN" "$@"
+fi

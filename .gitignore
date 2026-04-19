@@ -16,12 +16,18 @@ src-tauri/gen/android/
 src-tauri/gen/apple/
 
 # Built sidecar binaries (produced by PyInstaller in CI or local dev).
-# Track the directory itself via .gitkeep; ignore the actual executables.
+# Ignore compiled executables but always track the dev-mode shell script
+# wrappers so a local PyInstaller run can never silently overwrite them.
 src-tauri/binaries/*
 !src-tauri/binaries/.gitkeep
+!src-tauri/binaries/mf4u_sidecar-aarch64-apple-darwin
+!src-tauri/binaries/mf4u_sidecar-x86_64-apple-darwin
+!src-tauri/binaries/mf4u_sidecar-universal-apple-darwin
 
 # ── Python sidecar ────────────────────────────────────────────────────────
 sidecar/__pycache__/
+sidecar/**/__pycache__/
+sidecar/**/*.pyc
 sidecar/*.pyc
 sidecar/dist/
 sidecar/build/

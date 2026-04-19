@@ -98,6 +98,11 @@
         {:else if group.has_phy}
           <span class="badge phy-badge">phy</span>
         {/if}
+        {#if group.compression === "zipped" || group.compression === "transposed-zipped"}
+          <span class="badge comp-badge" title={group.compression}>
+            {group.compression === "transposed-zipped" ? "t-zip" : "zip"}
+          </span>
+        {/if}
         <span class="group-count">{group.channels.length}</span>
       </button>
 
@@ -213,6 +218,13 @@
   .badge.phy-badge {
     font-size: 0.65rem; padding: 0.1em 0.45em; border-radius: 3px;
     background: #280d0d; color: #f07575; border: 1px solid #401515;
+    white-space: nowrap; flex-shrink: 0;
+  }
+
+  /* "zip" / "t-zip" badge — blue-grey, indicates compressed DG data */
+  .badge.comp-badge {
+    font-size: 0.65rem; padding: 0.1em 0.45em; border-radius: 3px;
+    background: #0d1f28; color: #5ab4d8; border: 1px solid #1a3a4a;
     white-space: nowrap; flex-shrink: 0;
   }
 

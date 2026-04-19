@@ -4,6 +4,7 @@ MDF file metadata extraction via asammdf.
 from __future__ import annotations
 
 import os
+import xml.etree.ElementTree as ET
 from datetime import timedelta
 from typing import Any
 
@@ -59,10 +60,14 @@ def extract(mdf_obj: Any, file_path: str) -> dict[str, Any]:
     # ── bus frames ───────────────────────────────────────────────────────── #
     has_bus, bus_types, bus_frame_counts = _detect_bus_frames(groups)
 
-    # ── header comment ───────────────────────────────────────────────────── #
-    comment = ""
+    # ── header comment + HD text fields ─────────────────────────────────── #
+    raw_comment = ""
     if mdf_obj.header and mdf_obj.header.comment:
-        comment = str(mdf_obj.header.comment).strip()
+        raw_comment = str(mdf_obj.header.comment).strip()
+    hd = _parse_hd_comment(raw_comment)
+
+    # ── per-DG compression state ─────────────────────────────────────────── #
+    dg_compression = [_group_compression_state(mdf_obj, g) for g in groups]
 
     # ── attachments ──────────────────────────────────────────────────────── #
     attachments: list[str] = []
@@ -91,7 +96,12 @@ def extract(mdf_obj: Any, file_path: str) -> dict[str, Any]:
         "has_bus_frames":     has_bus,
         "bus_types":          bus_types,
         "bus_frame_counts":   bus_frame_counts,  # {type: group_count}
-        "comment":          comment,
+        "comment":          hd["comment"],
+        "author":           hd["author"],
+        "department":       hd["department"],
+        "project":          hd["project"],
+        "subject":          hd["subject"],
+        "dg_compression":   dg_compression,
         "attachments":      attachments,
     }
 
@@ -99,6 +109,107 @@ def extract(mdf_obj: Any, file_path: str) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # Internal helpers
 # --------------------------------------------------------------------------- #
+
+def _parse_hd_comment(raw: str) -> dict[str, str]:
+    """
+    Parse an MDF4 HD block comment that may be plain text or XML.
+
+    Plain-text comments (MDF3-style TX blocks or simple strings) are returned
+    as-is in the "comment" key.  XML HD comments (HDcomment MD block) are split
+    into their constituent fields:
+      <TX>         → comment
+      <author>     → author
+      <department> → department
+      <project>    → project
+      <subject>    → subject
+    """
+    out: dict[str, str] = {
+        "comment": "", "author": "", "department": "", "project": "", "subject": "",
+    }
+    if not raw:
+        return out
+
+    stripped = raw.strip()
+    if not stripped.startswith("<"):
+        # Plain text — no XML to parse.
+        out["comment"] = stripped
+        return out
+
+    try:
+        root = ET.fromstring(stripped)
+
+        # Comment text: prefer <TX> (MDF4 spec), fall back to root text, then
+        # any child element text — so real-world files that omit <TX> still work.
+        tx = root.find("TX")
+        if tx is None:
+            tx = root.find(".//TX")
+        if tx is not None and (tx.text or "").strip():
+            out["comment"] = tx.text.strip()
+        elif (root.text or "").strip():
+            out["comment"] = root.text.strip()
+        else:
+            # Last resort: concatenate all direct child text nodes
+            parts = [
+                (el.text or "").strip()
+                for el in root
+                if el.tag not in ("author", "department", "project", "subject")
+                and (el.text or "").strip()
+            ]
+            out["comment"] = " ".join(parts)
+
+        for tag in ("author", "department", "project", "subject"):
+            # Format 1: direct child element  <author>value</author>
+            el = root.find(tag)
+            if el is None:
+                el = root.find(f".//{tag}")
+            if el is not None and (el.text or "").strip():
+                out[tag] = el.text.strip()
+                continue
+            # Format 2: ETAS INCA / MDF4 common_properties
+            #   <common_properties><e name="author">value</e></common_properties>
+            for e in root.findall(".//e"):
+                if e.get("name") == tag and (e.text or "").strip():
+                    out[tag] = e.text.strip()
+                    break
+    except ET.ParseError:
+        # If we can't parse it as XML, treat the whole string as the comment.
+        out["comment"] = stripped
+
+    return out
+
+
+def _group_compression_state(mdf_obj: Any, group: Any) -> str:
+    """
+    Determine the compression state of a data group.
+
+    Reads the ``block_type`` field from the first ``DataBlockInfo`` entry on
+    ``group.data_blocks`` — an asammdf-internal list that is always populated
+    after the file is opened, regardless of the ``memory`` mode.
+
+    asammdf block_type values (from ``v4_constants``):
+      DT_BLOCK            = 0  → "uncompressed"
+      DZ_BLOCK_DEFLATE    = 1  → "zipped"
+      DZ_BLOCK_TRANSPOSED = 2  → "transposed-zipped"
+      DZ_BLOCK_LZ         = 3  → "zipped"
+      DZ_BLOCK_LZ_TRANSPOSED = 4  → "transposed-zipped"
+      DZ_BLOCK_ZSTD       = 5  → "zipped"
+      DZ_BLOCK_ZSTD_TRANSPOSED = 6  → "transposed-zipped"
+    """
+    try:
+        blocks = getattr(group, "data_blocks", None)
+        if not blocks:
+            return "uncompressed"   # no data blocks → effectively empty/uncompressed
+        block_type = getattr(blocks[0], "block_type", 0)
+        if block_type == 0:
+            return "uncompressed"
+        if block_type in (2, 4, 6):
+            return "transposed-zipped"
+        if block_type in (1, 3, 5):
+            return "zipped"
+        return "unknown"
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
 
 def _duration(
     mdf_obj: Any, start_dt: Any

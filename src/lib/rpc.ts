@@ -22,6 +22,11 @@ export interface Metadata {
   bus_types: string[];
   bus_frame_counts: Record<string, number>; // {type: channel-group count}
   comment: string;
+  author: string;
+  department: string;
+  project: string;
+  subject: string;
+  dg_compression: string[];               // per-group: "uncompressed" | "zipped" | "transposed-zipped" | "unknown"
   attachments: string[];
 }
 
@@ -43,6 +48,7 @@ export interface GroupInfo {
   is_bus_raw: boolean;
   bus_type: string | null;
   has_phy: boolean;
+  compression: string;  // "uncompressed" | "zipped" | "transposed-zipped" | "unknown"
   channels: ChannelInfo[];
 }
 

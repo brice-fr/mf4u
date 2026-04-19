@@ -146,12 +146,13 @@ def handle_get_structure(req: dict) -> dict:
             })
 
         groups_out.append({
-            "index":      i,
-            "acq_name":   acq_name,
-            "is_bus_raw": is_bus_raw,
-            "bus_type":   bus_type,
-            "has_phy":    has_phy,
-            "channels":   channels_out,
+            "index":       i,
+            "acq_name":    acq_name,
+            "is_bus_raw":  is_bus_raw,
+            "bus_type":    bus_type,
+            "has_phy":     has_phy,
+            "compression": _meta._group_compression_state(mdf, group),
+            "channels":    channels_out,
         })
 
     return _ok(req, {"groups": groups_out})
