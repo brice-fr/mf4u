@@ -160,19 +160,19 @@ jobs:
             -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KC_PATH"
           security list-keychain -d user -s "$KC_PATH"
 
-      # ── Write a CI-only Tauri config overlay (signing + notarisation) ──────
-      # This keeps tauri.conf.json clean for local dev where no certs exist.
+      # ── Write a CI-only Tauri config overlay (code-signing identity) ─────────
+      # Tauri 2 does not accept 'notarize' inside bundle.macOS; notarisation
+      # is triggered automatically when APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID
+      # are present in the environment (already passed to tauri-action below).
       - name: Write macOS CI config overlay
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_TEAM_ID:          ${{ secrets.APPLE_TEAM_ID }}
         run: |
           cat > /tmp/tauri-macos.conf.json << JSON
           {
             "bundle": {
               "macOS": {
-                "signingIdentity": "${APPLE_SIGNING_IDENTITY}",
-                "notarize": { "teamId": "${APPLE_TEAM_ID}" }
+                "signingIdentity": "${APPLE_SIGNING_IDENTITY}"
               }
             }
           }
