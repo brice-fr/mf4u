@@ -36,7 +36,7 @@ permissions:
 
 env:
   PYTHON_VERSION: '3.12'
-  NODE_VERSION: '20'
+  NODE_VERSION: '22'
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Job 1a — Python sidecar · macOS arm64
@@ -45,9 +45,9 @@ jobs:
   sidecar-macos-arm64:
     runs-on: macos-14    # Apple Silicon runner
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -63,7 +63,7 @@ jobs:
             --collect-all pyarrow \
             __main__.py
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: sidecar-macos-arm64
           path: sidecar/dist/mf4u_sidecar
@@ -80,9 +80,9 @@ jobs:
   sidecar-macos-x86_64:
     runs-on: macos-14    # Apple Silicon runner; x86_64 built via Rosetta 2
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -101,7 +101,7 @@ jobs:
             __main__.py
           lipo -info dist/mf4u_sidecar   # must report: x86_64
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: sidecar-macos-x86_64
           path: sidecar/dist/mf4u_sidecar
@@ -114,15 +114,15 @@ jobs:
     needs: [sidecar-macos-arm64, sidecar-macos-x86_64]
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # ── Assemble universal sidecar from the two per-arch binaries ──────────
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: sidecar-macos-arm64
           path: /tmp/sidecar-arm64
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: sidecar-macos-x86_64
           path: /tmp/sidecar-x86_64
@@ -179,7 +179,7 @@ jobs:
           JSON
 
       # ── Toolchain setup ─────────────────────────────────────────────────────
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -228,9 +228,9 @@ jobs:
   release-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -254,7 +254,7 @@ jobs:
           Copy-Item sidecar/dist/mf4u_sidecar.exe `
             src-tauri/binaries/mf4u_sidecar-x86_64-pc-windows-msvc.exe
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
