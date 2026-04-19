@@ -72,8 +72,13 @@ jobs:
 # ─────────────────────────────────────────────────────────────────────────────
 # Job 1b — Python sidecar · macOS x86_64
 # ─────────────────────────────────────────────────────────────────────────────
+# NOTE: macos-13 (Intel) is no longer available on GitHub's standard runners.
+# Instead we use the Apple Silicon runner (macos-14) and invoke Python via
+# 'arch -x86_64', which runs it under Rosetta 2.  Because actions/setup-python
+# provides a universal2 binary on macOS, pip resolves x86_64 wheels and
+# PyInstaller emits an x86_64-only executable — verified by 'lipo -info'.
   sidecar-macos-x86_64:
-    runs-on: macos-13    # Intel runner
+    runs-on: macos-14    # Apple Silicon runner; x86_64 built via Rosetta 2
     steps:
       - uses: actions/checkout@v4
 
@@ -81,17 +86,20 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install dependencies & build sidecar (x86_64)
+      - name: Install dependencies & build sidecar (x86_64 via Rosetta 2)
         run: |
-          pip install --upgrade pip
-          pip install -r sidecar/requirements.txt pyinstaller
+          # Capture the universal2 Python executable path set up by setup-python.
+          PY=$(python3 -c "import sys; print(sys.executable)")
+          arch -x86_64 "$PY" -m pip install --upgrade pip
+          arch -x86_64 "$PY" -m pip install -r sidecar/requirements.txt pyinstaller
           cd sidecar
-          pyinstaller --onefile --clean \
+          arch -x86_64 "$PY" -m PyInstaller --onefile --clean \
             --name mf4u_sidecar \
             --collect-all asammdf \
             --collect-all canmatrix \
             --collect-all pyarrow \
             __main__.py
+          lipo -info dist/mf4u_sidecar   # must report: x86_64
 
       - uses: actions/upload-artifact@v4
         with:
