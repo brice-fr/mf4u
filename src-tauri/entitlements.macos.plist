@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!--
+  macOS entitlements for mf4u.
+  com.apple.security.cs.disable-library-validation is required because the
+  Python sidecar is packaged with PyInstaller --onefile, which extracts a
+  temporary directory of unsigned .dylib / .so files at launch.  Under the
+  hardened runtime (mandatory for notarised apps) macOS Sonoma would
+  otherwise refuse to load those unsigned shared libraries, causing the
+  sidecar to crash before it reads a single byte from stdin.
+-->
+<dict>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>

@@ -33,6 +33,9 @@
     ],
     "externalBin": [
       "binaries/mf4u_sidecar"
-    ]
+    ],
+    "macOS": {
+      "entitlements": "entitlements.macos.plist"
+    }
   }
 }

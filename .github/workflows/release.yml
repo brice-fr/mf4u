@@ -61,6 +61,9 @@ jobs:
             --collect-all asammdf \
             --collect-all canmatrix \
             --collect-all pyarrow \
+            --hidden-import metadata \
+            --hidden-import stats \
+            --hidden-import export \
             __main__.py
 
       - uses: actions/upload-artifact@v7
@@ -98,6 +101,9 @@ jobs:
             --collect-all asammdf \
             --collect-all canmatrix \
             --collect-all pyarrow \
+            --hidden-import metadata \
+            --hidden-import stats \
+            --hidden-import export \
             __main__.py
           lipo -info dist/mf4u_sidecar   # must report: x86_64
 
@@ -305,6 +311,9 @@ jobs:
             --collect-all asammdf `
             --collect-all canmatrix `
             --collect-all pyarrow `
+            --hidden-import metadata `
+            --hidden-import stats `
+            --hidden-import export `
             __main__.py
 
       - name: Copy sidecar to binaries
