@@ -207,7 +207,10 @@ jobs:
         with:
           workspaces: src-tauri
 
-      # ── Build · sign · notarise · publish to GitHub Release ─────────────────
+      # ── Build aarch64 · sign · notarise · create GitHub Release draft ────────
+      # This first invocation creates the draft release and sets the body.
+      # The two subsequent tauri-action calls find the existing draft and
+      # simply upload their artifacts without changing the description.
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN:           ${{ secrets.GITHUB_TOKEN }}
@@ -221,8 +224,53 @@ jobs:
           releaseBody: |
             ## mf4u v__VERSION__
 
-            **macOS** — download `mf4u_universal.dmg` — runs natively on Apple Silicon and Intel.
-            **Windows** — download `mf4u_x64-setup.exe` — NSIS installer.
+            ### macOS
+            | Download | Runs on |
+            |---|---|
+            | `mf4u___VERSION___aarch64.dmg` | Apple Silicon (M-series) |
+            | `mf4u___VERSION___x64.dmg` | Intel Mac |
+            | `mf4u___VERSION___universal.dmg` | Both — single binary for any Mac |
+
+            ### Windows
+            | Download | Notes |
+            |---|---|
+            | `mf4u___VERSION___x64-setup.exe` | NSIS installer, x86-64 |
+          releaseDraft: true
+          prerelease:  false
+          args: >-
+            --target aarch64-apple-darwin
+            --config /tmp/tauri-macos.conf.json
+
+      # ── Build x86_64 · sign · notarise · upload to draft ────────────────────
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN:           ${{ secrets.GITHUB_TOKEN }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID:               ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD:         ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID:          ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName:     ${{ github.ref_name || github.event.inputs.tag_name }}
+          releaseName: 'mf4u v__VERSION__'
+          releaseDraft: true
+          prerelease:  false
+          args: >-
+            --target x86_64-apple-darwin
+            --config /tmp/tauri-macos.conf.json
+
+      # ── Build universal · sign · notarise · upload to draft ──────────────────
+      # Both arch Rust artefacts are already in the cache from the two builds
+      # above, so this step compiles almost nothing — only the lipo merge.
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN:           ${{ secrets.GITHUB_TOKEN }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID:               ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD:         ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID:          ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName:     ${{ github.ref_name || github.event.inputs.tag_name }}
+          releaseName: 'mf4u v__VERSION__'
           releaseDraft: true
           prerelease:  false
           args: >-
