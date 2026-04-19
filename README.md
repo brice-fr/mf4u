@@ -1,46 +1,53 @@
-# mf4u — mf4 utility
+# mf4u — MF4 utility
 
-A desktop MF4 / MDF file inspector and exporter, built with Tauri 2, SvelteKit, and a Python sidecar powered by [asammdf](https://github.com/danielhrisca/asammdf).
+A desktop MF4 / MDF file inspector and exporter, built with [Tauri 2](https://tauri.app), [SvelteKit](https://kit.svelte.dev), and a Python sidecar powered by [asammdf](https://github.com/danielhrisca/asammdf).
 
-Supports opening `.mf4` and `.mdf` files, browsing their channel-group hierarchy, loading per-channel statistics on demand, and exporting all physical signals to **MATLAB `.mat`** or **NI TDMS `.tdms`** format.
+Open `.mf4` and `.mdf` files, browse their full channel-group hierarchy, inspect per-channel statistics on demand, and export every physical signal to **MATLAB `.mat`**, **NI TDMS `.tdms`**, **Apache Parquet**, **CSV**, **TSV**, or **Excel `.xlsx`** — with background-threaded progress tracking and cancellation throughout.
 
 ---
 
 ## Features
 
-### File Opening
-- **Open** `.mf4` / `.mdf` files via the toolbar button, the **File → Open…** menu item, or the keyboard shortcut **⌘O** / **Ctrl+O**
-- **Drag and drop** any `.mf4` or `.mdf` file directly onto the window
-- The toolbar Open button displays a **spinner** during the load; the button is disabled until the file is fully parsed
-- The OS window title updates to **`<filename> — mf4 utility`** while a file is open and resets to `mf4 utility` on close
+### File opening
 
-### Inspector Pane
-The left panel presents structured metadata extracted from the MDF4 header, organised into cards:
+- **Open** `.mf4` / `.mdf` files via the toolbar button, **File → Open…** (⌘O / Ctrl+O), or by **drag-and-drop** onto the window
+- The toolbar Open button shows a spinner while the file is being parsed; the rest of the UI is blocked until metadata is ready
+- The OS window title updates to `<filename> — mf4 utility` while a file is open
+
+---
+
+### Inspector pane
+
+The left panel presents structured metadata extracted from the MDF4 header, organised into collapsible cards.
 
 #### File
 | Field | Description |
 |---|---|
 | File | Base filename |
-| Size | Human-readable file size (B / KB / MB / GB) |
-| MDF version | MDF standard version string from the file header |
+| Size | Human-readable file size |
+| MDF version | Version string from the file header (e.g. `4.10`, `4.20`) |
 
 #### Timing
 | Field | Description |
 |---|---|
-| Start | Recording start timestamp (locale-formatted, millisecond precision) |
+| Start | Recording start timestamp (locale-formatted, ms precision) |
 | End | Recording end timestamp |
-| Duration | Total recording duration (auto-scaled: ms / s / m / h) |
+| Duration | Total duration, auto-scaled (ms / s / m:ss / h:mm:ss) |
 
 #### Structure
 | Field | Description |
 |---|---|
-| Total channel groups | Total number of channel groups (including empty ones) |
-| Non-empty groups | Groups that contain at least one channel |
+| Total channel groups | All channel groups, including empty ones |
+| Non-empty groups | Groups containing at least one channel |
 | Total signals | Sum of all channels across all groups |
-| Physical signals | Channels belonging to groups that are **not** raw bus-frame groups |
+| Physical signals | Channels belonging to non-raw-frame groups |
+
+#### Recording
+Shown only when at least one of the following is present in the HD block:
+`Author`, `Subject`, `Project`, `Department` — parsed from both standard MDF4 `<HDcomment>` XML and ETAS INCA `<common_properties>` XML formats.
 
 #### Bus Frames
-Shown only when the file contains bus-logged data. One row per detected bus type, each label colour-coded to match the signal tree badges:
+Shown only when the file contains bus-logged data. One row per detected bus type, each label colour-coded to match the signal-tree badges:
 
 | Bus | Colour |
 |---|---|
@@ -54,117 +61,130 @@ Shown only when the file contains bus-logged data. One row per detected bus type
 | USB | Red `#f07070` |
 
 #### Attachments
-Lists any embedded attachment filenames; hidden when none are present.
+Lists embedded attachment filenames; hidden when none are present.
 
-#### Comment
-Full recording comment rendered in a scrollable monospace block; hidden when absent.
+#### Comments
+Full recording comment rendered in a scrollable monospace block with a custom scrollbar; hidden when absent.
 
 ---
 
-### Signal Tree
-The right panel is a collapsible channel-group hierarchy, always visible when a file is loaded.
+### Signal tree
+
+The right panel is a collapsible channel-group hierarchy.
 
 #### Filter bar
-- **Live search input** at the top of the tree filters channel names across all groups as you type (case-insensitive substring match)
-- A **group · signal summary** counter sits to the right of the filter input
+- **Live search** filters channel names across all groups as you type (case-insensitive substring match)
+- A group · signal summary counter sits to the right of the input
 
 #### Group rows
-Each group is rendered as a single clickable row:
 
 | Element | Meaning |
 |---|---|
-| **▸ / ▾ chevron** | Collapsed / expanded state; click anywhere on the row to toggle |
-| **Acquisition name** | The `acq_name` field from the MDF4 channel-group block, or `Group N` if absent |
-| **Bus-type badge** | Colour-coded pill showing the detected bus type (e.g. `CAN FD`) — see colour table above |
-| **`raw frames` badge** | Muted grey pill shown alongside the bus badge; indicates this group holds raw bus frames, not decoded physical values |
-| **`phy` badge** (red) | Shown on non-raw-frames groups that contain at least one physical channel |
-| **Channel count** | Right-aligned tabular numeral count; fixed 4-character width so all counts stay column-aligned regardless of magnitude |
+| ▸ / ▾ chevron | Collapsed / expanded; click anywhere on the row to toggle |
+| Acquisition name | `acq_name` from the MDF4 CG block, or `Group N` if absent |
+| `zip` / `t-zip` badge (blue-grey) | Channel group data is deflate-compressed or transposed-compressed; always rendered as an invisible spacer when absent so the badges to its right stay column-aligned |
+| Bus-type badge | Colour-coded pill showing the detected bus type (e.g. `CAN FD`) |
+| `raw frames` badge | Grey pill alongside the bus badge; indicates raw bus frames, not decoded physical values |
+| `phy` badge (red) | Non-raw-frames group that contains at least one physical channel |
+| Channel count | Right-aligned, fixed 4-character width |
 
-#### Bus-type detection
-mf4u uses a two-stage detection strategy to correctly identify bus-frame groups:
+**Compression detection** reads `DataBlockInfo.block_type` from the asammdf group internals:
+`0` → uncompressed · `1/3/5` → zipped · `2/4/6` → transposed-zipped.
 
-1. **Channel-name matching** — checks for the presence of well-known MDF4 bus-logging channel names (`CAN_DataFrame`, `LIN_Frame`, `MOST_Message`, etc.).  CAN FD is distinguished from plain CAN by the presence of the FD-specific sub-signals `CAN_DataFrame.BRS` and `CAN_DataFrame.EDL`.
-2. **`acq_source.bus_type` field** — reads the acquisition source metadata from the channel-group block using asammdf's v4 constants (`BUS_TYPE_CAN=2`, `BUS_TYPE_LIN=3`, `BUS_TYPE_MOST=4`, etc.).
-
-Both methods are combined: a group is tagged with whichever bus type either method detects first.
+**Bus-type detection** uses a two-stage strategy:
+1. **Channel-name matching** — presence of `CAN_DataFrame`, `LIN_Frame`, etc.; CAN FD distinguished by `CAN_DataFrame.BRS` / `CAN_DataFrame.EDL`.
+2. **`acq_source.bus_type` field** — reads the asammdf v4 `BUS_TYPE_*` constant from the CG acquisition source block.
 
 #### Channel rows (expanded group)
-Expanding a group reveals one row per channel, laid out in a fixed grid:
 
 | Column | Content |
 |---|---|
-| **Name** | Channel name; truncated with ellipsis if too long; the full name and comment are shown in a tooltip on hover |
-| **`phy` badge** | Red pill present when the channel has a non-empty unit string **or** a non-trivial conversion rule (linear with a ≠ 1 or b ≠ 0, rational, algebraic, look-up table, etc.) |
-| **Unit** | Physical unit string, right-aligned |
-| **Statistics** | Shows `n=` (sample count), `min=`, `max=`, `μ=` once loaded; hidden until requested |
-| **`stats` button** | Small grey pill button; click to load statistics for that channel on demand (lazy — no data is read at open time) |
-
-Statistics are fetched asynchronously from the Python sidecar and cached for the session. A `…` placeholder is shown while the request is in flight; errors are surfaced inline with a ⚠ prefix.
+| Name | Truncated with ellipsis; full name + comment visible on hover |
+| `phy` badge | Red pill when the channel has a unit or a non-trivial conversion rule |
+| Unit | Physical unit string, right-aligned |
+| Statistics | `n=`, `min=`, `max=`, `μ=` once loaded |
+| `stats` button | Click to lazily load statistics for that channel; cached for the session |
 
 ---
 
-### Export Dialog
-Opened via **File → Export…** (⌘E / Ctrl+E) or the Export toolbar button; only enabled when a file is loaded.
+### Export dialog
 
-- **Format selector** — choose between **TDMS** (NI LabVIEW format, `.tdms`) or **MAT** (MATLAB format, `.mat`)
-- **Output path** — text field populated by the native OS **Save As** dialog (Browse button); pre-fills the current filename with the chosen extension
-- **Progress bar** — live fill showing export progress once started; below it: `{done}/{total} groups ({pct}%)`
-- **Cancel** — stops the background export thread; the partial output file is removed
-- **Export / Close / Cancel** buttons are shown contextually based on current state (idle / running / done / cancelled / error)
+Opened via **File → Export…** (⌘E / Ctrl+E) or the Export toolbar button; enabled only when a file is loaded.
 
-Export runs in a Python background thread and does not block the UI. Signals from raw bus-frame groups are exported verbatim (no decoding); physical groups are exported with calibrated values.
+#### Supported formats
+
+| Format | Extension | Notes |
+|---|---|---|
+| NI TDMS | `.tdms` | One TDMS group per MDF4 channel group |
+| MATLAB | `.mat` | scipy `savemat` with compression; channel names sanitised to valid MATLAB variable names |
+| Apache Parquet | `.parquet` | Snappy-compressed; one file per channel group for multi-group files |
+| CSV | `.csv` | One file per channel group for multi-group files; UTF-8, `timestamps` first column |
+| TSV | `.tsv` | Same as CSV with tab delimiter |
+| Excel | `.xlsx` | Single workbook; one worksheet per channel group |
+
+The default output filename is pre-filled with the **MF4 file's own name** (extension stripped), so `my_recording.mf4` defaults to `my_recording.tdms`, `my_recording.csv`, etc.
+
+#### Progress & control
+- Live progress bar: `{done}/{total} groups ({pct}%)`
+- **Cancel** stops the background export thread and removes any partial output files
+- Export / Close / Cancel buttons shown contextually based on state (idle / running / done / cancelled / error)
 
 ---
 
-### Status Bar
-A 22 px strip at the very bottom of the window, visible whenever a file is loaded:
+### Status bar
+
+A slim strip at the bottom of the window, visible whenever a file is loaded:
 
 ```
 3 groups · 142 signals · 47 physical · 2 empty groups     hide empty groups · expand all · collapse all
 ```
 
-| Left section | Content |
+| Right-side controls | Behaviour |
 |---|---|
-| `N groups` | Total group count in the loaded file |
-| `N signals` | Total channel count |
-| `N physical` | Channels in non-raw-frames groups |
-| `N empty groups` | Groups with zero channels — shown only when present |
-
-| Right section — action links | Behaviour |
-|---|---|
-| **hide empty groups** / **show empty groups** | Toggles visibility of zero-channel groups in the tree; link is hidden entirely when the file has no empty groups |
-| **expand all** | Opens every group in the tree simultaneously |
-| **collapse all** | Closes every group |
+| hide / show empty groups | Toggles zero-channel groups in the tree; hidden when no empty groups exist |
+| expand all / collapse all | Opens or closes every group simultaneously |
 
 ---
 
-### OS Integration
+### OS integration
 
-#### Toolbar
-A slim 36 px icon bar sits below the OS title bar at all times:
+#### Native menus (macOS)
 
-| Button | Icon | Shortcut | State |
-|---|---|---|---|
-| Open | Folder-open | ⌘O / Ctrl+O | Shows spinner while loading |
-| Export | Document with down-arrow | ⌘E / Ctrl+E | Disabled until a file is loaded |
-
-#### Native menu bar (macOS)
 | Menu | Items |
 |---|---|
-| **mf4u** | About mf4u, Services, Hide mf4u, Hide Others, Show All, Quit |
-| **File** | Open… `⌘O`, Export… `⌘E`, ─, Close Window |
+| **mf4u** | About mf4u · Quit |
+| **File** | Open… `⌘O` · Export… `⌘E` · Close Window |
 | **Help** | About mf4u |
 
-On Windows and Linux the About item appears under Help; the app menu is omitted.
+On Windows the About item appears under Help; the macOS app menu is omitted.
 
 #### About dialog
-Shows the app icon, the `mf4u` / `u` two-colour wordmark, the `mf4 utility` subtitle, the version number (read from `package.json` at build time), and the copyright line.
+Shows the app icon, version (read from `package.json` at build time), and copyright.
+
+---
+
+## Planned — v0.2.0
+
+Three opt-in features configurable at any time before export via dedicated toolbar buttons and a new **Export** menu, independently or in combination.
+
+### Frame decoding
+Load one or more `.dbc` or `.arxml` bus description files and assign them (in priority order) to raw-frame channel groups. On export, the assigned descriptions are used to decode the raw frames into named physical signals via asammdf's `extract_bus_logging`. Raw frames that match no message in any assigned description are omitted from the output. A preview panel shows matched message and signal counts before exporting.
+
+### Channel filter
+A dual-panel signal picker (available / to export) with add, remove, add-all, remove-all controls and a live search box. The available list is pre-populated with all physical signals already in the file; a **"Preview decoded channels"** button enriches it with the signals that would result from any configured frame decoding. The selection is saved as session state and applied transparently at export time.
+
+### Flatten output
+Merges all channel groups into a single time-ordered table. The master timestamp axis is the union of all group timestamps; cells where a channel has no record at a given timestamp are filled with `NaN` (MAT), `null` (Parquet), or an empty cell (CSV / TSV / XLSX). Available for MAT, Parquet, CSV, TSV, and XLSX; not available for TDMS or MF4 (which require synchronised channels within a group). A memory estimate is shown before starting.
+
+### MF4 re-export
+Export back to `.mf4` with the same HD-block metadata (timestamps, author, comment, etc.) but with frame decoding and/or channel filtering applied. Useful for producing a clean decoded copy of a raw-bus-logging file.
 
 ---
 
 ## Distribution
 
 ### Packaged releases
+
 Pre-built installers are published on the [Releases](../../releases) page via GitHub Actions:
 
 | Platform | Artifact | Architecture |
@@ -172,178 +192,211 @@ Pre-built installers are published on the [Releases](../../releases) page via Gi
 | macOS | `.dmg` universal installer | Apple Silicon + Intel (arm64 + x86_64) |
 | Windows | `.exe` NSIS installer | x86_64 |
 
-The macOS app is **code-signed** with a Developer ID Application certificate and **notarized** through Apple's notarization service; Gatekeeper will open it without a quarantine warning.
+The macOS app is **code-signed** with a Developer ID Application certificate and **notarized** through Apple's notarization service; Gatekeeper opens it without a quarantine warning.
 
 ### GitHub Actions workflow
+
 Triggered by pushing a `v*` tag (or manually via workflow dispatch):
 
 1. **sidecar-macos-arm64** — builds the Python sidecar with PyInstaller on `macos-14` (arm64)
-2. **sidecar-macos-x86_64** — builds the Python sidecar with PyInstaller on `macos-13` (Intel)
-3. **release-macos** — downloads both sidecar artifacts, joins them into a fat universal binary with `lipo`, imports the Developer ID certificate into a temporary keychain, builds a universal Tauri app, signs and notarizes, publishes to the GitHub Release draft
-4. **release-windows** — builds the sidecar with PyInstaller on `windows-latest`, builds the Tauri NSIS installer, publishes to the same release draft
+2. **sidecar-macos-x86_64** — builds the Python sidecar with PyInstaller on `macos-13` (Intel, via Rosetta 2)
+3. **release-macos** — downloads both sidecar artifacts, merges them into a universal binary with `lipo`, signs and notarizes, publishes to the GitHub release draft
+4. **release-windows** — builds the sidecar and NSIS installer on `windows-latest`, publishes to the same draft
 
 The release is created as a **draft**; review and publish it manually on GitHub.
 
 ---
 
-## Development Toolchain
+## Development toolchain
 
 | Component | Technology | Version |
 |---|---|---|
 | App framework | [Tauri 2](https://tauri.app) | 2.x |
 | Frontend | [SvelteKit](https://kit.svelte.dev) + [Svelte 5](https://svelte.dev) | 5.x runes |
+| Language | TypeScript | 5.x |
 | Build tool | [Vite](https://vitejs.dev) | 6.x |
 | Rust backend | [Rust](https://rust-lang.org) | stable |
 | MDF4 parsing | [asammdf](https://github.com/danielhrisca/asammdf) | 8.x |
 | TDMS export | [nptdms](https://github.com/adamreeve/npTDMS) | 1.9+ |
-| MATLAB export | [scipy.io.savemat](https://docs.scipy.org/doc/scipy/reference/generated/scipy.io.savemat.html) | 1.12+ |
+| MATLAB export | [scipy](https://scipy.org) `io.savemat` | 1.12+ |
+| Parquet export | [pyarrow](https://arrow.apache.org/docs/python/) | 14.0+ |
+| XLSX export | [openpyxl](https://openpyxl.readthedocs.io) | 3.1+ |
 | Sidecar packaging | [PyInstaller](https://pyinstaller.org) | 6.x |
-| Native dialogs | `@tauri-apps/plugin-dialog` | 2.x |
-| Shell / sidecar IPC | `@tauri-apps/plugin-shell` | 2.x |
+
+See [DEPENDENCIES.md](DEPENDENCIES.md) for a full third-party license audit.
 
 ---
 
-## Getting Started
+## Getting started
 
 ### Prerequisites
 
-| Tool | macOS | Windows |
-|---|---|---|
-| Rust toolchain | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` | [rustup.rs](https://rustup.rs) |
-| Node.js LTS | [nvm](https://github.com/nvm-sh/nvm) or [nodejs.org](https://nodejs.org) | [nvm-windows](https://github.com/coreybutler/nvm-windows) |
-| Python 3.12+ | [python.org](https://python.org) or `brew install python@3.12` | [python.org](https://python.org) |
-| Xcode CLT | `xcode-select --install` | — |
-| WebView2 | — | pre-installed on Windows 10/11 |
+| Tool | Version | macOS | Windows |
+|---|---|---|---|
+| Rust | stable | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` | [rustup.rs](https://rustup.rs) |
+| Node.js | ≥ 22 | [nvm](https://github.com/nvm-sh/nvm): `nvm install 22` | [nvm-windows](https://github.com/coreybutler/nvm-windows) |
+| Python | ≥ 3.10 | [python.org](https://python.org) or `brew install python@3.12` | [python.org](https://python.org) |
+| Xcode CLT | — | `xcode-select --install` | — |
+| WebView2 | — | — | Pre-installed on Windows 10/11 |
 
-### Build the Python sidecar (required before first run)
-
-The Tauri app expects a native executable at `src-tauri/binaries/mf4u_sidecar-<target-triple>`.  Build it once with PyInstaller:
+### First-time setup
 
 ```bash
-# Install sidecar dependencies
-pip install -r sidecar/requirements.txt pyinstaller
+# 1. JS dependencies
+npm install
 
-# Build (run from the repo root)
+# 2. Python sidecar virtualenv
 cd sidecar
-pyinstaller --onefile --clean \
-  --name mf4u_sidecar \
-  --collect-all asammdf \
-  __main__.py
+python3 -m venv .venv
+source .venv/bin/activate        # macOS / Linux
+# .venv\Scripts\activate         # Windows
+pip install -r requirements.txt
 cd ..
-
-# macOS arm64
-cp sidecar/dist/mf4u_sidecar \
-   src-tauri/binaries/mf4u_sidecar-aarch64-apple-darwin
-
-# macOS x86_64
-cp sidecar/dist/mf4u_sidecar \
-   src-tauri/binaries/mf4u_sidecar-x86_64-apple-darwin
-
-# Windows
-copy sidecar\dist\mf4u_sidecar.exe ^
-     src-tauri\binaries\mf4u_sidecar-x86_64-pc-windows-msvc.exe
 ```
 
 ### Run in development mode
 
 ```bash
-npm install
+# macOS — source toolchains first
+source "$HOME/.cargo/env"
+export NVM_DIR="$HOME/.nvm" && source "$NVM_DIR/nvm.sh"
+
 npm run tauri dev
 ```
 
-Hot-reload is active for the SvelteKit frontend.  Changes to the Python sidecar require re-running the PyInstaller step above.
+This starts Vite (hot-reload UI), compiles the Tauri Rust shell, and launches the Python sidecar automatically using `sidecar/.venv/bin/python3`.
+
+> **Note:** in dev mode Tauri copies the sidecar wrapper script from `src-tauri/binaries/` to `src-tauri/target/debug/` and runs it from there. The wrapper walks upward to find the project root, so no manual path configuration is needed.
+
+> **After a local release build:** if you ran `tauri build` or a local PyInstaller invocation, the dev wrapper script may have been overwritten by the frozen binary. Restore it with:
+> ```bash
+> git restore src-tauri/binaries/mf4u_sidecar-aarch64-apple-darwin
+> ```
+
+### Run the test suite
+
+```bash
+cd sidecar
+source .venv/bin/activate
+pytest tests/ -v
+```
+
+50 tests across metadata extraction, per-channel statistics, and all six export formats.
 
 ### Build a release locally
 
+Build the PyInstaller sidecar first (see [COMMANDS.md](COMMANDS.md) for the full commands including `--collect-all` flags), then:
+
 ```bash
-npm run tauri build
-# macOS  → src-tauri/target/release/bundle/dmg/
-# Windows → src-tauri/target/release/bundle/nsis/
+# macOS arm64
+npm run tauri build -- --target aarch64-apple-darwin
+
+# macOS universal
+npm run tauri build -- --target universal-apple-darwin
+
+# Windows (run on Windows)
+npm run tauri build -- --target x86_64-pc-windows-msvc
 ```
+
+See [COMMANDS.md](COMMANDS.md) for the complete step-by-step build reference including code-signing environment variables.
 
 ### Trigger a CI release
 
 ```bash
-# Bump version in package.json and src-tauri/tauri.conf.json first, then:
+# Bump version in package.json and src-tauri/tauri.conf.json, then:
 git tag v0.2.0
 git push origin v0.2.0
 ```
-
-The GitHub Actions workflow builds and publishes a draft release for both platforms automatically.
 
 ---
 
 ## Architecture
 
 ### Sidecar IPC
-The Python sidecar (`sidecar/`) communicates with the Rust host via **JSON-RPC 2.0 over stdio** using `tauri-plugin-shell`.  Each request is a single JSON line on stdin; each response is a single JSON line on stdout.
+
+The Python sidecar communicates with the Rust host via **JSON-RPC 2.0 over stdio** (one JSON line per request/response) using `tauri-plugin-shell`.
 
 ```
-Svelte frontend
-    │  invoke("command", params)
-    ▼
+Svelte UI  →  invoke("command", params)
+              ↓
 Rust command handler  (src-tauri/src/lib.rs)
-    │  write JSON-RPC request to sidecar stdin
-    ▼
+              ↓  write JSON-RPC to sidecar stdin
 Python sidecar  (sidecar/__main__.py)
-    │  parse MDF4 with asammdf
-    ▼
+              ↓  parse with asammdf / export
 Rust command handler
-    │  return result
-    ▼
-Svelte frontend
+              ↓  return result
+Svelte UI
 ```
+
+Export jobs run in **background daemon threads** inside the sidecar; the UI polls progress via `get_export_progress` every 400 ms.
+
+### JSON-RPC methods
+
+| Method | Purpose |
+|---|---|
+| `ping` | Health check |
+| `open_file` | Parse file, return full metadata + session ID |
+| `get_structure` | Return channel groups and channel list |
+| `get_signal_stats` | Lazily compute min/max/mean for one channel |
+| `start_export` | Start a background export job, return job ID |
+| `get_export_progress` | Poll job status (`running` / `done` / `error` / `cancelled`) |
+| `cancel_export` | Request job cancellation |
+| `close_session` | Release the open MDF object |
 
 ### Sidecar modules
 
 | File | Responsibility |
 |---|---|
-| `__main__.py` | JSON-RPC router; session management (`SESSIONS` dict); `_is_phy()` helper |
-| `metadata.py` | MDF4 header extraction; `group_bus_type()` two-stage bus detection |
-| `stats.py` | Per-channel min / max / mean / sample count (loads samples lazily) |
-| `export.py` | Background-threaded TDMS and MAT export with progress tracking and cancellation |
+| `__main__.py` | JSON-RPC router; session management |
+| `metadata.py` | MDF4 header extraction; HD comment XML parser; two-stage bus-type detection |
+| `stats.py` | Per-channel min / max / mean / sample count |
+| `export.py` | Background-threaded MAT / TDMS / Parquet / CSV / TSV / XLSX export with progress and cancellation |
 
 ---
 
-## Project Structure
+## Project structure
 
 ```
 mf4u/
-├── src/                              # SvelteKit frontend
-│   ├── lib/
-│   │   ├── rpc.ts                    # Typed Tauri invoke wrappers
-│   │   ├── busColors.ts              # Per-bus-type colour tokens
-│   │   └── components/
-│   │       ├── MetadataPanel.svelte  # Left inspector pane
-│   │       ├── SignalTree.svelte     # Right channel-group tree
-│   │       ├── Toolbar.svelte        # Icon toolbar (Open, Export)
-│   │       ├── ExportDialog.svelte   # TDMS / MAT export with progress
-│   │       └── AboutDialog.svelte    # About modal
-│   └── routes/
-│       └── +page.svelte              # App shell, OS menus, status bar
+├── SPEC.md                           Feature specification
+├── COMMANDS.md                       Dev & build command reference
+├── DEPENDENCIES.md                   Third-party license audit
+├── package.json
+├── src/
+│   ├── routes/
+│   │   └── +page.svelte              App shell, OS menus, session state
+│   └── lib/
+│       ├── rpc.ts                    Typed Tauri invoke wrappers
+│       ├── busColors.ts              Per-bus-type colour tokens
+│       └── components/
+│           ├── Toolbar.svelte
+│           ├── MetadataPanel.svelte
+│           ├── SignalTree.svelte
+│           ├── ExportDialog.svelte
+│           └── AboutDialog.svelte
 ├── src-tauri/
 │   ├── src/
-│   │   ├── main.rs                   # Entry point
-│   │   └── lib.rs                    # Tauri builder + Rust command handlers
-│   ├── binaries/                     # Compiled sidecar executables (gitignored)
-│   │   └── .gitkeep
-│   ├── capabilities/
-│   │   └── default.json              # Tauri ACL permissions
-│   ├── icons/                        # Full icon set (.icns, .ico, .png)
-│   └── tauri.conf.json               # App configuration
-├── sidecar/                          # Python sidecar
-│   ├── __main__.py                   # JSON-RPC 2.0 entry point & router
-│   ├── metadata.py                   # MDF4 metadata + bus-type detection
-│   ├── stats.py                      # Channel statistics
-│   ├── export.py                     # TDMS + MAT export engine
-│   └── requirements.txt              # Python dependencies
-├── static/                           # Web-accessible static assets
-├── .github/workflows/
-│   └── release.yml                   # macOS universal + Windows CI/CD
-├── vite.config.js
-├── svelte.config.js
-├── package.json
-└── README.md
+│   │   ├── main.rs
+│   │   └── lib.rs                    Tauri commands + sidecar JSON-RPC relay
+│   ├── binaries/                     Dev wrapper shell scripts (git-tracked)
+│   ├── capabilities/default.json     Tauri ACL permissions
+│   ├── entitlements.macos.plist      cs.disable-library-validation for PyInstaller
+│   └── tauri.conf.json
+├── sidecar/
+│   ├── __main__.py
+│   ├── metadata.py
+│   ├── stats.py
+│   ├── export.py
+│   ├── requirements.txt
+│   └── tests/
+│       ├── conftest.py
+│       ├── generate_fixtures.py
+│       ├── test_metadata.py
+│       ├── test_stats.py
+│       ├── test_export.py
+│       └── fixtures/                 Synthetic .mf4 files (git-tracked)
+└── .github/workflows/
+    └── release.yml                   macOS universal + Windows CI/CD
 ```
 
 ---
@@ -356,3 +409,5 @@ Released under the **MIT License** — see [LICENSE](LICENSE) for full text.
 SPDX-License-Identifier: MIT
 Copyright (c) 2026 Brice LECOLE
 ```
+
+> **Note on bundled dependencies:** the Python sidecar bundles [asammdf](https://github.com/danielhrisca/asammdf) (LGPL-3.0-or-later) and [nptdms](https://github.com/adamreeve/npTDMS) (LGPL-2.1-or-later). See [DEPENDENCIES.md](DEPENDENCIES.md) for the full license audit and PyInstaller bundling compliance notes.
