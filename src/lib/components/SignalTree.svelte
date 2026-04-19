@@ -88,6 +88,12 @@
       <button class="group-row" onclick={() => toggle(group.index)}>
         <span class="chevron">{expanded[group.index] ? "▾" : "▸"}</span>
         <span class="group-name">{group.acq_name}</span>
+        <!-- compression badge — always rendered so bus/phy badges stay aligned -->
+        <span
+          class="badge comp-badge"
+          class:comp-hidden={group.compression !== "zipped" && group.compression !== "transposed-zipped"}
+          title={group.compression}
+        >{group.compression === "transposed-zipped" ? "t-zip" : "zip"}</span>
         {#if group.bus_type}
           {@const c = busColor(group.bus_type)}
           <span class="badge bus-label"
@@ -97,11 +103,6 @@
           <span class="badge frames-label">raw frames</span>
         {:else if group.has_phy}
           <span class="badge phy-badge">phy</span>
-        {/if}
-        {#if group.compression === "zipped" || group.compression === "transposed-zipped"}
-          <span class="badge comp-badge" title={group.compression}>
-            {group.compression === "transposed-zipped" ? "t-zip" : "zip"}
-          </span>
         {/if}
         <span class="group-count">{group.channels.length}</span>
       </button>
@@ -178,7 +179,13 @@
     flex: 1;
     overflow-y: auto;
     overflow-x: hidden;
+    scrollbar-color: #555 transparent;   /* thumb track — Firefox / standard */
+    scrollbar-width: thin;
   }
+  .tree-body::-webkit-scrollbar       { width: 7px; }
+  .tree-body::-webkit-scrollbar-track { background: transparent; }
+  .tree-body::-webkit-scrollbar-thumb { background: #555; border-radius: 4px; }
+  .tree-body::-webkit-scrollbar-thumb:hover { background: #777; }
 
   /* ── group row ── */
   .group-row {
@@ -227,6 +234,8 @@
     background: #0d1f28; color: #5ab4d8; border: 1px solid #1a3a4a;
     white-space: nowrap; flex-shrink: 0;
   }
+  /* reserve space even when not compressed so right-side badges stay aligned */
+  .badge.comp-badge.comp-hidden { visibility: hidden; }
 
   /* 4ch = exactly 4 tabular digits; right-aligned so 1- to 4-digit counts stack cleanly */
   .group-count { color: #555; font-size: 0.75rem; flex-shrink: 0; width: 4ch; text-align: right; font-variant-numeric: tabular-nums; }

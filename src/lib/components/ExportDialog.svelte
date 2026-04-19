@@ -5,30 +5,43 @@
 
   let {
     sessionId,
+    fileName = "",
     onclose,
   }: {
     sessionId: string;
+    fileName?: string;
     onclose: () => void;
   } = $props();
 
-  type Fmt = "tdms" | "mat" | "parquet";
+  /** Strip any extension from the source file name to use as the export stem. */
+  function exportStem(): string {
+    const base = fileName.replace(/\.[^.]+$/, "");
+    return base || "export";
+  }
+
+  type Fmt = "tdms" | "mat" | "parquet" | "csv" | "tsv" | "xlsx";
   let format: Fmt       = $state("tdms");
   let outputPath        = $state("");
   let jobId = $state(null as string | null);
   let job   = $state(null as ExportJob | null);
   let pollTimer: ReturnType<typeof setInterval> | null = null;
 
+  const MULTI_HINT = "One file per channel group when multiple groups are present.";
+
   const FMT_META: Record<Fmt, { label: string; ext: string; hint?: string }> = {
-    tdms:    { label: "NI TDMS (.tdms)",       ext: "tdms" },
-    mat:     { label: "MATLAB (.mat)",          ext: "mat"  },
-    parquet: { label: "Apache Parquet (.parquet)", ext: "parquet",
-               hint: "One .parquet file per channel group when multiple groups are present." },
+    tdms:    { label: "NI TDMS (.tdms)",          ext: "tdms" },
+    mat:     { label: "MATLAB (.mat)",             ext: "mat"  },
+    parquet: { label: "Parquet (.parquet)",        ext: "parquet", hint: MULTI_HINT },
+    csv:     { label: "CSV (.csv)",                ext: "csv",     hint: MULTI_HINT },
+    tsv:     { label: "TSV (.tsv)",                ext: "tsv",     hint: MULTI_HINT },
+    xlsx:    { label: "Excel (.xlsx)",             ext: "xlsx",
+               hint: "One worksheet per channel group in a single workbook." },
   };
 
   async function browse() {
     const { ext, label } = FMT_META[format];
     const path = await saveDialog({
-      defaultPath: `export.${ext}`,
+      defaultPath: `${exportStem()}.${ext}`,
       filters: [{ name: label, extensions: [ext] }],
     });
     if (path) outputPath = path as string;
@@ -120,7 +133,7 @@
     <div class="field">
       <span class="field-label">Format</span>
       <div class="radio-group">
-        {#each (["tdms", "mat", "parquet"] as Fmt[]) as f}
+        {#each (["tdms", "mat", "parquet", "csv", "tsv", "xlsx"] as Fmt[]) as f}
           <label class="radio" class:active={format === f}>
             <input
               type="radio"
@@ -259,6 +272,7 @@
   /* ── format radio group ── */
   .radio-group {
     display: flex;
+    flex-wrap: wrap;
     gap: 0.5rem;
   }
 

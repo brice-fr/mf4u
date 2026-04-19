@@ -1,5 +1,5 @@
 """
-Tests for sidecar/export.py — MAT, TDMS, and Parquet export jobs.
+Tests for sidecar/export.py — MAT, TDMS, Parquet, CSV, TSV, and XLSX export jobs.
 """
 from __future__ import annotations
 
@@ -176,6 +176,138 @@ class TestParquetExport:
         assert progress["status"] == "done", progress.get("error")
         parquet_files = [f for f in os.listdir(tmp_path) if f.endswith(".parquet")]
         assert len(parquet_files) == 4
+
+
+# --------------------------------------------------------------------------- #
+# CSV export
+# --------------------------------------------------------------------------- #
+
+class TestCsvExport:
+    def test_creates_file(self, minimal_mf4, tmp_path):
+        import export as exp
+        mdf = _open(minimal_mf4)
+        out = str(tmp_path / "out.csv")
+        try:
+            job_id = exp.start(mdf, "csv", out)
+            progress = _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        assert progress["status"] == "done", progress.get("error")
+        assert os.path.isfile(out)
+        assert os.path.getsize(out) > 0
+
+    def test_has_header_and_data_rows(self, minimal_mf4, tmp_path):
+        import csv
+        import export as exp
+        mdf = _open(minimal_mf4)
+        out = str(tmp_path / "out.csv")
+        try:
+            job_id = exp.start(mdf, "csv", out)
+            _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        with open(out, newline="", encoding="utf-8") as fh:
+            rows = list(csv.reader(fh))
+        assert len(rows) >= 2                         # header + at least one data row
+        assert "timestamps" in rows[0]
+        assert any("Ch" in col for col in rows[0])    # Ch1 / Ch2 / Ch3 in header
+
+    def test_multi_group_creates_multiple_files(self, multi_group_mf4, tmp_path):
+        import export as exp
+        mdf = _open(multi_group_mf4)
+        out = str(tmp_path / "multi.csv")
+        try:
+            job_id = exp.start(mdf, "csv", out)
+            progress = _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        assert progress["status"] == "done", progress.get("error")
+        csv_files = [f for f in os.listdir(tmp_path) if f.endswith(".csv")]
+        assert len(csv_files) == 4
+
+
+# --------------------------------------------------------------------------- #
+# TSV export
+# --------------------------------------------------------------------------- #
+
+class TestTsvExport:
+    def test_creates_file(self, minimal_mf4, tmp_path):
+        import export as exp
+        mdf = _open(minimal_mf4)
+        out = str(tmp_path / "out.tsv")
+        try:
+            job_id = exp.start(mdf, "tsv", out)
+            progress = _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        assert progress["status"] == "done", progress.get("error")
+        assert os.path.isfile(out)
+        assert os.path.getsize(out) > 0
+
+    def test_tab_delimited(self, minimal_mf4, tmp_path):
+        import export as exp
+        mdf = _open(minimal_mf4)
+        out = str(tmp_path / "out.tsv")
+        try:
+            job_id = exp.start(mdf, "tsv", out)
+            _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        with open(out, encoding="utf-8") as fh:
+            header = fh.readline()
+        assert "\t" in header
+        assert "," not in header
+
+
+# --------------------------------------------------------------------------- #
+# XLSX export
+# --------------------------------------------------------------------------- #
+
+class TestXlsxExport:
+    def test_creates_file(self, minimal_mf4, tmp_path):
+        import export as exp
+        mdf = _open(minimal_mf4)
+        out = str(tmp_path / "out.xlsx")
+        try:
+            job_id = exp.start(mdf, "xlsx", out)
+            progress = _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        assert progress["status"] == "done", progress.get("error")
+        assert os.path.isfile(out)
+        assert os.path.getsize(out) > 0
+
+    def test_output_readable_by_openpyxl(self, minimal_mf4, tmp_path):
+        import export as exp
+        import openpyxl  # type: ignore[import-untyped]
+        mdf = _open(minimal_mf4)
+        out = str(tmp_path / "out.xlsx")
+        try:
+            job_id = exp.start(mdf, "xlsx", out)
+            _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        wb = openpyxl.load_workbook(out, read_only=True)
+        assert len(wb.sheetnames) >= 1
+        ws = wb.worksheets[0]
+        rows = list(ws.iter_rows(values_only=True))
+        assert len(rows) >= 2    # header + at least one data row
+        wb.close()
+
+    def test_multi_group_creates_multiple_sheets(self, multi_group_mf4, tmp_path):
+        import export as exp
+        import openpyxl  # type: ignore[import-untyped]
+        mdf = _open(multi_group_mf4)
+        out = str(tmp_path / "multi.xlsx")
+        try:
+            job_id = exp.start(mdf, "xlsx", out)
+            progress = _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        assert progress["status"] == "done", progress.get("error")
+        wb = openpyxl.load_workbook(out, read_only=True)
+        assert len(wb.sheetnames) == 4
+        wb.close()
 
 
 # --------------------------------------------------------------------------- #

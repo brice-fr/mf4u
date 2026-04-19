@@ -119,7 +119,7 @@
   <!-- comment — full-width, scrollable pre -->
   {#if meta.comment}
     <div class="group comment-card">
-      <h3>Comment</h3>
+      <h3>Comments</h3>
       <pre class="comment-pre">{meta.comment}</pre>
     </div>
   {/if}
@@ -190,10 +190,17 @@
     border: 1px solid #282828;
     border-radius: 4px;
     padding: 0.55rem 0.7rem;
+    min-height: 4rem;
     max-height: 140px;
     overflow: auto;          /* both axes */
-    overflow-x: auto;
     white-space: pre;        /* keep newlines; horizontal scroll for long lines */
     line-height: 1.5;
+    scrollbar-color: #555 #1e1e1e;   /* thumb track — Firefox / standard */
+    scrollbar-width: thin;
   }
+  .comment-pre::-webkit-scrollbar       { width: 7px; height: 7px; }
+  .comment-pre::-webkit-scrollbar-track { background: #1e1e1e; border-radius: 4px; }
+  .comment-pre::-webkit-scrollbar-thumb { background: #555; border-radius: 4px; }
+  .comment-pre::-webkit-scrollbar-thumb:hover { background: #777; }
+  .comment-pre::-webkit-scrollbar-corner { background: #1e1e1e; }
 </style>

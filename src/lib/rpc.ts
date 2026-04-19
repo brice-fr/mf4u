@@ -100,7 +100,7 @@ export async function closeSession(sessionId: string): Promise<void> {
 
 export async function startExport(
   sessionId: string,
-  format: "mat" | "tdms" | "parquet",
+  format: "mat" | "tdms" | "parquet" | "csv" | "tsv" | "xlsx",
   outputPath: string,
 ): Promise<{ job_id: string }> {
   return invoke<{ job_id: string }>("start_export", { sessionId, format, outputPath });

@@ -233,8 +233,8 @@ def handle_start_export(req: dict) -> dict:
     fmt         = params.get("format", "")
     output_path = params.get("output_path", "")
 
-    if fmt not in ("mat", "tdms", "parquet"):
-        return _err(req, 1001, "params.format must be 'mat', 'tdms', or 'parquet'")
+    if fmt not in ("mat", "tdms", "parquet", "csv", "tsv", "xlsx"):
+        return _err(req, 1001, "params.format must be 'mat', 'tdms', 'parquet', 'csv', 'tsv', or 'xlsx'")
     if not output_path:
         return _err(req, 1001, "params.output_path is required")
 

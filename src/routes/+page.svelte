@@ -175,7 +175,7 @@
   {/if}
 
   {#if showExport && sessionId}
-    <ExportDialog {sessionId} onclose={() => (showExport = false)} />
+    <ExportDialog {sessionId} fileName={metadata?.file_name ?? ""} onclose={() => (showExport = false)} />
   {/if}
 
   <!-- ── icon toolbar ── -->
