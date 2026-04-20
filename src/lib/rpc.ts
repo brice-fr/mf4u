@@ -74,6 +74,26 @@ export interface ExportJob {
   error: string | null;
 }
 
+// ── Phase A: bus frame decoding ────────────────────────────────────────────── //
+
+/** One (group, db) assignment entry.  Order within the same group_index = priority. */
+export interface DbAssignment {
+  group_index: number;
+  db_path: string;
+}
+
+export interface BusDecodingPreview {
+  group_index: number;
+  db_path: string;
+  matched_messages: number;
+  signal_count: number;
+  error: string | null;
+}
+
+export interface PreviewBusDecodingResult {
+  previews: BusDecodingPreview[];
+}
+
 // -------------------------------------------------------------------------- //
 // API
 // -------------------------------------------------------------------------- //
@@ -102,8 +122,24 @@ export async function startExport(
   sessionId: string,
   format: "mat" | "tdms" | "parquet" | "csv" | "tsv" | "xlsx",
   outputPath: string,
+  dbAssignments?: DbAssignment[],
 ): Promise<{ job_id: string }> {
-  return invoke<{ job_id: string }>("start_export", { sessionId, format, outputPath });
+  return invoke<{ job_id: string }>("start_export", {
+    sessionId,
+    format,
+    outputPath,
+    dbAssignments: dbAssignments && dbAssignments.length > 0 ? dbAssignments : null,
+  });
+}
+
+export async function previewBusDecoding(
+  sessionId: string,
+  dbAssignments: DbAssignment[],
+): Promise<PreviewBusDecodingResult> {
+  return invoke<PreviewBusDecodingResult>("preview_bus_decoding", {
+    sessionId,
+    dbAssignments,
+  });
 }
 
 export async function getExportProgress(jobId: string): Promise<ExportJob> {

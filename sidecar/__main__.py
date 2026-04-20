@@ -224,14 +224,35 @@ def handle_debug_bus_detection(req: dict) -> dict:
     return _ok(req, {"groups": rows})
 
 
+def handle_preview_bus_decoding(req: dict) -> dict:
+    """Return per-(group, db) match counts without running a full decode."""
+    session, err = _session(req)
+    if err:
+        return err
+
+    params         = req.get("params", {})
+    db_assignments = params.get("db_assignments", [])
+
+    if not isinstance(db_assignments, list):
+        return _err(req, 1001, "params.db_assignments must be a list")
+
+    try:
+        import export as exp
+        previews = exp.preview_bus_decoding(session["mdf"], db_assignments)
+        return _ok(req, {"previews": previews})
+    except Exception as exc:  # noqa: BLE001
+        return _err(req, 1003, f"preview error: {exc}")
+
+
 def handle_start_export(req: dict) -> dict:
     session, err = _session(req)
     if err:
         return err
 
-    params      = req.get("params", {})
-    fmt         = params.get("format", "")
-    output_path = params.get("output_path", "")
+    params         = req.get("params", {})
+    fmt            = params.get("format", "")
+    output_path    = params.get("output_path", "")
+    db_assignments = params.get("db_assignments") or None  # None if absent/null/[]
 
     if fmt not in ("mat", "tdms", "parquet", "csv", "tsv", "xlsx"):
         return _err(req, 1001, "params.format must be 'mat', 'tdms', 'parquet', 'csv', 'tsv', or 'xlsx'")
@@ -240,7 +261,8 @@ def handle_start_export(req: dict) -> dict:
 
     try:
         import export as exp
-        job_id = exp.start(session["mdf"], fmt, output_path)
+        job_id = exp.start(session["mdf"], fmt, output_path,
+                           db_assignments=db_assignments)
         return _ok(req, {"job_id": job_id})
     except Exception as exc:  # noqa: BLE001
         return _err(req, 1001, f"failed to start export: {exc}")
@@ -278,6 +300,7 @@ HANDLERS: dict[str, Any] = {
     "start_export":           handle_start_export,
     "get_export_progress":    handle_get_export_progress,
     "cancel_export":          handle_cancel_export,
+    "preview_bus_decoding":   handle_preview_bus_decoding,
     "debug_bus_detection":    handle_debug_bus_detection,
 }
 

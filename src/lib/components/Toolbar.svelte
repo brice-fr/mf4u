@@ -1,14 +1,22 @@
 <script lang="ts">
   let {
-    loading  = false,
-    hasFile  = false,
-    onopen   = () => {},
-    onexport = () => {},
+    loading           = false,
+    hasFile           = false,
+    hasRawFrameGroups = false,
+    decodingActive    = false,
+    decodingDbCount   = 0,
+    onopen            = () => {},
+    onexport          = () => {},
+    onframedecoding   = () => {},
   }: {
-    loading?:  boolean;
-    hasFile?:  boolean;
-    onopen?:   () => void;
-    onexport?: () => void;
+    loading?:           boolean;
+    hasFile?:           boolean;
+    hasRawFrameGroups?: boolean;
+    decodingActive?:    boolean;
+    decodingDbCount?:   number;
+    onopen?:            () => void;
+    onexport?:          () => void;
+    onframedecoding?:   () => void;
   } = $props();
 </script>
 
@@ -40,6 +48,29 @@
       </svg>
     {/if}
   </button>
+
+  <!-- Frame decoding -->
+  <div class="icon-btn-wrap">
+    <button
+      class="icon-btn"
+      class:active={decodingActive}
+      onclick={onframedecoding}
+      disabled={!hasRawFrameGroups}
+      title="Configure frame decoding…"
+      aria-label="Configure frame decoding"
+    >
+      <!-- Chain-link icon -->
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+           fill="none" stroke="currentColor" stroke-width="1.8"
+           stroke-linecap="round" stroke-linejoin="round">
+        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+      </svg>
+    </button>
+    {#if decodingActive && decodingDbCount > 0}
+      <span class="active-badge">{decodingDbCount} DB</span>
+    {/if}
+  </div>
 
   <!-- Export -->
   <button
@@ -91,8 +122,32 @@
   .icon-btn:hover:not(:disabled) { background: #2e2e2e; color: #e8e8e8; }
   .icon-btn:active:not(:disabled) { background: #3a3a3a; }
   .icon-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .icon-btn.active { color: #6c9ef8; }
+  .icon-btn.active:hover:not(:disabled) { background: #1a2030; color: #81aaff; }
 
   .icon-btn svg { width: 18px; height: 18px; }
+
+  /* wrapper for button + floating badge */
+  .icon-btn-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  .active-badge {
+    position: absolute;
+    top: -4px;
+    right: -6px;
+    background: #6c9ef8;
+    color: #fff;
+    font-size: 0.55rem;
+    font-weight: 700;
+    line-height: 1;
+    padding: 1px 3px;
+    border-radius: 3px;
+    pointer-events: none;
+    white-space: nowrap;
+  }
 
   .spin { animation: spin 0.8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }

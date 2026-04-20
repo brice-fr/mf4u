@@ -1,16 +1,18 @@
 <script lang="ts">
   import { save as saveDialog } from "@tauri-apps/plugin-dialog";
   import { startExport, getExportProgress, cancelExport } from "$lib/rpc";
-  import type { ExportJob } from "$lib/rpc";
+  import type { ExportJob, DbAssignment } from "$lib/rpc";
 
   let {
     sessionId,
-    fileName = "",
+    fileName      = "",
+    dbAssignments = [],
     onclose,
   }: {
-    sessionId: string;
-    fileName?: string;
-    onclose: () => void;
+    sessionId:      string;
+    fileName?:      string;
+    dbAssignments?: DbAssignment[];
+    onclose:        () => void;
   } = $props();
 
   /** Strip any extension from the source file name to use as the export stem. */
@@ -47,10 +49,16 @@
     if (path) outputPath = path as string;
   }
 
+  // Derived active-settings values (Phase A: decoding only)
+  const uniqueDecodingDbs   = $derived(new Set(dbAssignments.map(a => a.db_path)));
+  const decodingGroupCount  = $derived(new Set(dbAssignments.map(a => a.group_index)).size);
+  const hasActiveSettings   = $derived(dbAssignments.length > 0);
+
   async function runExport() {
     if (!outputPath || jobId) return;
     try {
-      const r = await startExport(sessionId, format, outputPath);
+      const r = await startExport(sessionId, format, outputPath,
+                                  dbAssignments.length > 0 ? dbAssignments : undefined);
       jobId = r.job_id;
       job   = { status: "running", done: 0, total: 0, error: null };
       pollTimer = setInterval(poll, 400);
@@ -167,6 +175,21 @@
         <p class="field-hint">{FMT_META[format].hint}</p>
       {/if}
     </div>
+
+    <!-- ── active settings strip ── -->
+    {#if hasActiveSettings}
+      <div class="active-strip">
+        <span class="strip-label">Active settings</span>
+        <div class="strip-rows">
+          {#if dbAssignments.length > 0}
+            <div class="strip-row">
+              <span class="strip-key">Frame decoding</span>
+              <span class="strip-val">{decodingGroupCount} group{decodingGroupCount !== 1 ? "s" : ""} · {uniqueDecodingDbs.size} DB file{uniqueDecodingDbs.size !== 1 ? "s" : ""}</span>
+            </div>
+          {/if}
+        </div>
+      </div>
+    {/if}
 
     <!-- ── progress area ── -->
     {#if job}
@@ -339,6 +362,44 @@
     font-size: 0.72rem;
     color: #555;
     line-height: 1.4;
+  }
+
+  /* ── active settings strip ── */
+  .active-strip {
+    border: 1px solid #2a2a2a;
+    border-radius: 5px;
+    background: #161616;
+    padding: 0.45rem 0.65rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+  .strip-label {
+    font-size: 0.65rem;
+    font-weight: 600;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: #555;
+  }
+  .strip-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+  .strip-row {
+    display: flex;
+    gap: 0.75rem;
+    align-items: baseline;
+  }
+  .strip-key {
+    font-size: 0.75rem;
+    color: #888;
+    min-width: 7rem;
+    flex-shrink: 0;
+  }
+  .strip-val {
+    font-size: 0.75rem;
+    color: #c8c8c8;
   }
 
   /* ── progress area ── */

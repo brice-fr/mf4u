@@ -311,6 +311,166 @@ class TestXlsxExport:
 
 
 # --------------------------------------------------------------------------- #
+# Phase A — bus frame decoding
+# --------------------------------------------------------------------------- #
+
+class TestDbLoading:
+    def test_load_dbc_returns_db_object(self, can_bus_dbc):
+        """_load_db_matrix should parse the DBC without error."""
+        import export as exp
+        db = exp._load_db_matrix(can_bus_dbc)
+        assert db is not None
+
+    def test_dbc_message_map_correct_count(self, can_bus_dbc):
+        """can_bus.dbc has exactly 2 messages (IDs 100 and 200)."""
+        import export as exp
+        db  = exp._load_db_matrix(can_bus_dbc)
+        msg = exp._db_message_map(db)
+        assert len(msg) == 2
+        assert 100 in msg
+        assert 200 in msg
+
+    def test_dbc_signal_counts(self, can_bus_dbc):
+        """Message 100 has 2 signals; message 200 has 2 signals → 4 total."""
+        import export as exp
+        db  = exp._load_db_matrix(can_bus_dbc)
+        msg = exp._db_message_map(db)
+        assert msg[100] == 2
+        assert msg[200] == 2
+
+    def test_load_nonexistent_raises(self, tmp_path):
+        import export as exp
+        with pytest.raises(Exception):
+            exp._load_db_matrix(str(tmp_path / "ghost.dbc"))
+
+
+class TestGetGroupCanIds:
+    def test_reads_ids_from_bus_raw(self, bus_raw_mf4):
+        """bus_raw.mf4 has CAN_DataFrame.ID with values 100 and 200."""
+        import export as exp
+        mdf = _open(bus_raw_mf4)
+        try:
+            ids = exp._get_group_can_ids(mdf, 0)
+        finally:
+            mdf.close()
+        assert ids is not None
+        assert 100 in ids
+        assert 200 in ids
+
+    def test_returns_none_for_missing_channel(self, minimal_mf4):
+        """minimal.mf4 has no CAN_DataFrame.ID channel → should return None."""
+        import export as exp
+        mdf = _open(minimal_mf4)
+        try:
+            ids = exp._get_group_can_ids(mdf, 0)
+        finally:
+            mdf.close()
+        assert ids is None
+
+
+class TestPreviewBusDecoding:
+    def test_preview_returns_one_entry_per_assignment(self, bus_raw_mf4, can_bus_dbc):
+        import export as exp
+        mdf = _open(bus_raw_mf4)
+        assignments = [
+            {"group_index": 0, "db_path": can_bus_dbc},
+        ]
+        try:
+            results = exp.preview_bus_decoding(mdf, assignments)
+        finally:
+            mdf.close()
+        assert len(results) == 1
+        assert results[0]["group_index"] == 0
+        assert results[0]["db_path"] == can_bus_dbc
+        assert results[0]["error"] is None
+
+    def test_preview_correct_match_count(self, bus_raw_mf4, can_bus_dbc):
+        """Both DB messages (100, 200) appear in bus_raw.mf4 → matched_messages=2."""
+        import export as exp
+        mdf = _open(bus_raw_mf4)
+        assignments = [{"group_index": 0, "db_path": can_bus_dbc}]
+        try:
+            results = exp.preview_bus_decoding(mdf, assignments)
+        finally:
+            mdf.close()
+        assert results[0]["matched_messages"] == 2
+        assert results[0]["signal_count"] == 4   # 2 signals per message
+
+    def test_preview_empty_when_no_assignments(self, bus_raw_mf4):
+        import export as exp
+        mdf = _open(bus_raw_mf4)
+        try:
+            results = exp.preview_bus_decoding(mdf, [])
+        finally:
+            mdf.close()
+        assert results == []
+
+    def test_preview_error_for_bad_db_path(self, bus_raw_mf4, tmp_path):
+        """Missing DB file should produce an error entry (not raise)."""
+        import export as exp
+        mdf = _open(bus_raw_mf4)
+        assignments = [{"group_index": 0, "db_path": str(tmp_path / "missing.dbc")}]
+        try:
+            results = exp.preview_bus_decoding(mdf, assignments)
+        finally:
+            mdf.close()
+        assert results[0]["error"] is not None
+
+    def test_preview_fallback_when_no_can_id_channel(self, minimal_mf4, can_bus_dbc):
+        """When group has no CAN_DataFrame.ID, all DB messages count as matched."""
+        import export as exp
+        mdf = _open(minimal_mf4)
+        # minimal.mf4 has no CAN frames — _get_group_can_ids returns None
+        assignments = [{"group_index": 0, "db_path": can_bus_dbc}]
+        try:
+            results = exp.preview_bus_decoding(mdf, assignments)
+        finally:
+            mdf.close()
+        # Fallback: report all DB messages since we can't cross-reference IDs
+        assert results[0]["matched_messages"] == 2
+        assert results[0]["signal_count"] == 4
+
+
+class TestExportWithDecoding:
+    def test_export_with_empty_db_assignments_unchanged(self, minimal_mf4, tmp_path):
+        """db_assignments=[] should behave identically to no decoding."""
+        import export as exp
+        mdf = _open(minimal_mf4)
+        out = str(tmp_path / "out.csv")
+        try:
+            job_id   = exp.start(mdf, "csv", out, db_assignments=[])
+            progress = _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        assert progress["status"] == "done", progress.get("error")
+        assert os.path.isfile(out)
+
+    def test_export_with_decoding_completes_or_errors_cleanly(
+        self, bus_raw_mf4, can_bus_dbc, tmp_path
+    ):
+        """
+        Export with db_assignments should start and either complete or fail cleanly
+        (no crash / hung thread) regardless of whether extract_bus_logging succeeds.
+        """
+        import export as exp
+        mdf = _open(bus_raw_mf4)
+        out = str(tmp_path / "decoded.csv")
+        assignments = [{"group_index": 0, "db_path": can_bus_dbc}]
+        try:
+            job_id   = exp.start(mdf, "csv", out, db_assignments=assignments)
+            progress = _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        # The job must reach a terminal state — not hang
+        assert progress["status"] in ("done", "error"), (
+            f"unexpected status: {progress['status']}"
+        )
+        # If it errored, the error must carry a meaningful message
+        if progress["status"] == "error":
+            assert progress["error"]
+
+
+# --------------------------------------------------------------------------- #
 # Cancellation
 # --------------------------------------------------------------------------- #
 

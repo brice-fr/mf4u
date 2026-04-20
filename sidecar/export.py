@@ -43,26 +43,40 @@ _JOBS: dict[str, _Job] = {}
 # Public API
 # --------------------------------------------------------------------------- #
 
-def start(mdf: Any, fmt: str, output_path: str) -> str:
-    """Start an export job in a background thread; return its job_id."""
+def start(
+    mdf: Any,
+    fmt: str,
+    output_path: str,
+    db_assignments: "list[dict] | None" = None,
+) -> str:
+    """Start an export job in a background thread; return its job_id.
+
+    If *db_assignments* is provided (a list of ``{"group_index": int, "db_path": str}``
+    dicts in priority order), ``extract_bus_logging`` is applied before writing.
+    """
     job_id = str(uuid.uuid4())
     job    = _Job(total=len(mdf.groups))
     _JOBS[job_id] = job
 
     def _run() -> None:
         try:
+            active_mdf = mdf
+            if db_assignments:
+                active_mdf = _build_decoded_mdf(mdf, db_assignments)
+                job.total  = len(active_mdf.groups)
+
             if fmt == "mat":
-                _do_mat(mdf, output_path, job)
+                _do_mat(active_mdf, output_path, job)
             elif fmt == "tdms":
-                _do_tdms(mdf, output_path, job)
+                _do_tdms(active_mdf, output_path, job)
             elif fmt == "parquet":
-                _do_parquet(mdf, output_path, job)
+                _do_parquet(active_mdf, output_path, job)
             elif fmt == "csv":
-                _do_csv(mdf, output_path, job, delimiter=",")
+                _do_csv(active_mdf, output_path, job, delimiter=",")
             elif fmt == "tsv":
-                _do_csv(mdf, output_path, job, delimiter="\t")
+                _do_csv(active_mdf, output_path, job, delimiter="\t")
             elif fmt == "xlsx":
-                _do_xlsx(mdf, output_path, job)
+                _do_xlsx(active_mdf, output_path, job)
             else:
                 job.error  = f"unsupported format: {fmt!r}"
                 job.status = "error"
@@ -83,6 +97,59 @@ def start(mdf: Any, fmt: str, output_path: str) -> str:
 
     threading.Thread(target=_run, daemon=True).start()
     return job_id
+
+
+def preview_bus_decoding(mdf: Any, db_assignments: list[dict]) -> list[dict]:
+    """Lightweight DB-preview scan (no full decode).
+
+    For each ``{"group_index": int, "db_path": str}`` entry, count how many
+    messages in the DB have IDs that appear in the group's raw CAN frames.
+    When the group has no ``CAN_DataFrame.ID`` channel the full DB is reported.
+
+    Returns a list of result dicts in the same order as the input.
+    """
+    db_cache:  dict[str, Any]       = {}   # db_path → canmatrix CanMatrix
+    id_cache:  dict[int, "set[int] | None"] = {}   # group_index → CAN ID set
+    results:   list[dict]           = []
+
+    for assignment in db_assignments:
+        group_index = int(assignment["group_index"])
+        db_path     = str(assignment["db_path"])
+        res: dict = {
+            "group_index":      group_index,
+            "db_path":          db_path,
+            "matched_messages": 0,
+            "signal_count":     0,
+            "error":            None,
+        }
+
+        try:
+            if db_path not in db_cache:
+                db_cache[db_path] = _load_db_matrix(db_path)
+            db = db_cache[db_path]
+
+            db_msg_map = _db_message_map(db)  # {arb_id: signal_count}
+
+            if group_index not in id_cache:
+                id_cache[group_index] = _get_group_can_ids(mdf, group_index)
+            group_ids = id_cache[group_index]
+
+            if group_ids is None:
+                # Can't read IDs from this group — report all DB entries as matched.
+                matched = db_msg_map
+            else:
+                matched = {aid: sc for aid, sc in db_msg_map.items()
+                           if aid in group_ids}
+
+            res["matched_messages"] = len(matched)
+            res["signal_count"]     = sum(matched.values())
+
+        except Exception as exc:  # noqa: BLE001
+            res["error"] = str(exc)
+
+        results.append(res)
+
+    return results
 
 
 def get_progress(job_id: str) -> dict[str, Any]:
@@ -471,6 +538,115 @@ def _do_xlsx(mdf: Any, output_path: str, job: _Job) -> None:
         job.done = i + 1
 
     wb.save(output_path)
+
+
+# --------------------------------------------------------------------------- #
+# Bus-decoding helpers (Phase A)
+# --------------------------------------------------------------------------- #
+
+def _load_db_matrix(db_path: str) -> Any:
+    """Load a ``.dbc`` or ``.arxml`` file.  Returns a canmatrix ``CanMatrix``."""
+    try:
+        import canmatrix.formats  # type: ignore[import-untyped]
+    except ImportError as exc:
+        raise RuntimeError(
+            f"canmatrix is required for bus decoding: {exc}"
+        ) from exc
+    db_dict = canmatrix.formats.loadp(db_path)
+    if not db_dict:
+        raise RuntimeError(f"No network found in database file: {db_path!r}")
+    return next(iter(db_dict.values()))
+
+
+def _db_message_map(db: Any) -> dict[int, int]:
+    """Return ``{normalised_arb_id: signal_count}`` for all frames in *db*.
+
+    canmatrix uses ``CanMatrix.frames`` (a list of ``Frame`` objects).
+    The ``arbitration_id`` field is a ``canmatrix.ArbitrationId`` object
+    (with a ``.id`` int attribute) in recent versions; older versions store
+    a plain int with bit 31 set for extended frames.
+    """
+    result: dict[int, int] = {}
+    frames = getattr(db, "frames", None) or getattr(db, "messages", [])
+    for frame in frames:
+        arb = frame.arbitration_id
+        msg_id = int(getattr(arb, "id", arb)) & 0x1FFF_FFFF
+        result[msg_id] = len(list(frame.signals))
+    return result
+
+
+def _get_group_can_ids(mdf: Any, group_index: int) -> "set[int] | None":
+    """Read unique 29-bit CAN IDs from a raw group.  Returns *None* on failure."""
+    try:
+        sig = mdf.get(
+            "CAN_DataFrame.ID",
+            group=group_index,
+            raw=True,
+            ignore_invalidation_bits=True,
+        )
+        return {int(x) & 0x1FFF_FFFF for x in sig.samples.tolist()}
+    except Exception:  # noqa: BLE001
+        return None
+
+
+# asammdf extract_bus_logging key per our metadata bus-type label
+_BUS_TYPE_TO_EBL_KEY: dict[str, str] = {
+    "CAN":      "CAN",
+    "CAN FD":   "CAN",   # CAN FD frames are decoded with CAN databases
+    "LIN":      "LIN",
+    "FlexRay":  "FLEXRAY",
+    "MOST":     "MOST",
+    "Ethernet": "Ethernet",
+    "K-Line":   "K_LINE",
+}
+
+
+def _build_decoded_mdf(mdf: Any, db_assignments: list[dict]) -> Any:
+    """Apply ``MDF.extract_bus_logging()`` using the given ordered DB assignments.
+
+    Builds the ``database_files`` dict by mapping each assigned group's bus type
+    to the correct key expected by asammdf.  DB paths for the same bus type are
+    deduplicated (first occurrence wins, preserving priority order).
+
+    Returns the decoded MDF object (a new instance; the original is unmodified).
+    """
+    import metadata as _meta  # sidecar root is on sys.path at runtime
+
+    # ebl_key → ordered list of unique db_paths
+    ebl_dbs: dict[str, list[str]] = {}
+    seen:    dict[str, set[str]]  = {}
+
+    for assignment in db_assignments:
+        group_index = int(assignment["group_index"])
+        db_path     = str(assignment["db_path"])
+
+        if group_index >= len(mdf.groups):
+            continue
+
+        group    = mdf.groups[group_index]
+        bus_type = _meta.group_bus_type(group) or ""
+        ebl_key  = _BUS_TYPE_TO_EBL_KEY.get(bus_type)
+        if not ebl_key:
+            continue
+
+        if ebl_key not in ebl_dbs:
+            ebl_dbs[ebl_key] = []
+            seen[ebl_key]    = set()
+
+        if db_path not in seen[ebl_key]:
+            ebl_dbs[ebl_key].append(db_path)
+            seen[ebl_key].add(db_path)
+
+    if not ebl_dbs:
+        return mdf
+
+    # asammdf expects {"CAN": [(path, bus_channel), ...], ...}
+    database_files = {
+        key: [(path, 0) for path in paths]
+        for key, paths in ebl_dbs.items()
+    }
+
+    return mdf.extract_bus_logging(database_files=database_files)
 
 
 # --------------------------------------------------------------------------- #

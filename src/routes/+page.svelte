@@ -4,10 +4,11 @@
   import { Menu, Submenu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
   import { onMount } from "svelte";
   import { openFile, getStructure, closeSession } from "$lib/rpc";
-  import type { Metadata, GroupInfo } from "$lib/rpc";
+  import type { Metadata, GroupInfo, DbAssignment } from "$lib/rpc";
   import MetadataPanel from "$lib/components/MetadataPanel.svelte";
   import SignalTree from "$lib/components/SignalTree.svelte";
   import ExportDialog from "$lib/components/ExportDialog.svelte";
+  import FrameDecodingDialog from "$lib/components/FrameDecodingDialog.svelte";
   import AboutDialog from "$lib/components/AboutDialog.svelte";
   import Toolbar from "$lib/components/Toolbar.svelte";
 
@@ -21,6 +22,10 @@
   let dragging: boolean         = $state(false);
   let showExport: boolean       = $state(false);
   let showAbout: boolean        = $state(false);
+  let showFrameDecoding: boolean = $state(false);
+
+  // ── Phase A: frame decoding session config ─────────────────────────────── //
+  let decodingConfig: DbAssignment[] = $state([]);
 
   // ── signal tree controls (driven from status bar) ─────────────────────── //
   let showEmptyGroups: boolean              = $state(false);
@@ -36,8 +41,18 @@
     groups.filter((g) => !g.is_bus_raw).reduce((n, g) => n + g.channels.length, 0),
   );
 
+  // Phase A derived
+  const hasRawFrameGroups   = $derived(groups.some(g => g.is_bus_raw));
+  const decodingActive      = $derived(decodingConfig.length > 0);
+  const uniqueDecodingDbs   = $derived(new Set(decodingConfig.map(a => a.db_path)));
+
+  // Keep native menu items in sync with reactive state
+  $effect(() => { exportMenuItem?.setEnabled(phase === "loaded" && !!sessionId); });
+  $effect(() => { frameDecodingMenuItem?.setEnabled(hasRawFrameGroups); });
+
   // Native menu items we need to update at runtime
-  let exportMenuItem: Awaited<ReturnType<typeof MenuItem.new>> | null = null;
+  let exportMenuItem:        Awaited<ReturnType<typeof MenuItem.new>> | null = null;
+  let frameDecodingMenuItem: Awaited<ReturnType<typeof MenuItem.new>> | null = null;
 
   // ── window title ──────────────────────────────────────────────────────── //
   const APP_TITLE = "mf4 utility";
@@ -53,10 +68,11 @@
       await closeSession(sessionId).catch(() => {});
       sessionId = null;
     }
-    phase    = "loading";
-    errorMsg = "";
-    metadata = null;
-    groups   = [];
+    phase          = "loading";
+    errorMsg       = "";
+    metadata       = null;
+    groups         = [];
+    decodingConfig = [];   // reset Phase A config on new file open
     try {
       const result  = await openFile(path);
       sessionId = result.session_id;
@@ -65,12 +81,10 @@
       groups = struct.groups;
       phase  = "loaded";
       await setWindowTitle(result.metadata.file_name);
-      exportMenuItem?.setEnabled(true);
     } catch (e) {
       errorMsg = String(e);
       phase    = "error";
       await setWindowTitle();
-      exportMenuItem?.setEnabled(false);
     }
   }
 
@@ -117,6 +131,13 @@
         action: () => { if (sessionId) showExport = true; },
       });
 
+      frameDecodingMenuItem = await MenuItem.new({
+        id: "frame_decoding",
+        text: "Configure frame decoding…",
+        enabled: false,
+        action: () => { if (sessionId) showFrameDecoding = true; },
+      });
+
       const menu = await Menu.new({
         items: [
           // ① App menu — macOS system menu
@@ -145,13 +166,22 @@
                 accelerator: "CmdOrCtrl+O",
                 action: pickFile,
               }),
-              exportMenuItem,
               await PredefinedMenuItem.new({ item: "Separator" }),
               await PredefinedMenuItem.new({ item: "CloseWindow" }),
             ],
           }),
 
-          // ③ Help menu — non-macOS About lives here
+          // ③ Export menu (v0.2.0+)
+          await Submenu.new({
+            text: "Export",
+            items: [
+              frameDecodingMenuItem,
+              await PredefinedMenuItem.new({ item: "Separator" }),
+              exportMenuItem,
+            ],
+          }),
+
+          // ④ Help menu — non-macOS About lives here
           await Submenu.new({
             text: "Help",
             items: [aboutItem],
@@ -175,15 +205,34 @@
   {/if}
 
   {#if showExport && sessionId}
-    <ExportDialog {sessionId} fileName={metadata?.file_name ?? ""} onclose={() => (showExport = false)} />
+    <ExportDialog
+      {sessionId}
+      fileName={metadata?.file_name ?? ""}
+      dbAssignments={decodingConfig}
+      onclose={() => (showExport = false)}
+    />
+  {/if}
+
+  {#if showFrameDecoding && sessionId}
+    <FrameDecodingDialog
+      {groups}
+      {sessionId}
+      dbAssignments={decodingConfig}
+      onchange={(cfg) => (decodingConfig = cfg)}
+      onclose={() => (showFrameDecoding = false)}
+    />
   {/if}
 
   <!-- ── icon toolbar ── -->
   <Toolbar
     loading={phase === "loading"}
     hasFile={phase === "loaded" && !!sessionId}
+    hasRawFrameGroups={hasRawFrameGroups}
+    decodingActive={decodingActive}
+    decodingDbCount={uniqueDecodingDbs.size}
     onopen={pickFile}
     onexport={() => { if (sessionId) showExport = true; }}
+    onframedecoding={() => { if (sessionId) showFrameDecoding = true; }}
   />
 
   <!-- ── idle / error ── -->

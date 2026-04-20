@@ -49,3 +49,12 @@ def multi_group_mf4():
     if not os.path.isfile(path):
         pytest.skip(f"fixture not found: {path} — run tests/generate_fixtures.py first")
     return path
+
+
+@pytest.fixture(scope="session")
+def can_bus_dbc():
+    """Path to the synthetic DBC file (git-tracked, always present)."""
+    path = _fixture_path("can_bus.dbc")
+    if not os.path.isfile(path):
+        pytest.skip(f"fixture not found: {path}")
+    return path

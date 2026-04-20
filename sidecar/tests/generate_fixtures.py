@@ -86,9 +86,15 @@ def make_bus_raw() -> None:
     t = np.linspace(0.0, 0.1, 10, dtype=np.float64)
     # A raw-looking uint64 payload — dtype and values don't matter for metadata tests.
     payload = np.zeros(10, dtype=np.uint64)
+    # CAN frame IDs alternating between 100 and 200 — matching can_bus.dbc messages.
+    # These allow _get_group_can_ids() to return {100, 200} for the preview test.
+    can_ids = np.array([100, 200, 100, 200, 100, 200, 100, 200, 100, 200], dtype=np.uint32)
 
     mdf.append(
-        [Signal(samples=payload, timestamps=t, name="CAN_DataFrame", unit="")],
+        [
+            Signal(samples=payload,  timestamps=t, name="CAN_DataFrame",    unit=""),
+            Signal(samples=can_ids,  timestamps=t, name="CAN_DataFrame.ID", unit=""),
+        ],
         acq_name="CAN_bus",
     )
 

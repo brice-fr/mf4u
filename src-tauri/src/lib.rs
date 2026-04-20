@@ -112,15 +112,34 @@ async fn start_export(
     session_id: String,
     format: String,
     output_path: String,
+    db_assignments: Option<Value>,
     sidecar: tauri::State<'_, Mutex<Sidecar>>,
 ) -> Result<Value, String> {
     rpc_call(
         &sidecar,
         "start_export",
         json!({
-            "session_id":  session_id,
-            "format":      format,
-            "output_path": output_path,
+            "session_id":     session_id,
+            "format":         format,
+            "output_path":    output_path,
+            "db_assignments": db_assignments,
+        }),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn preview_bus_decoding(
+    session_id: String,
+    db_assignments: Value,
+    sidecar: tauri::State<'_, Mutex<Sidecar>>,
+) -> Result<Value, String> {
+    rpc_call(
+        &sidecar,
+        "preview_bus_decoding",
+        json!({
+            "session_id":     session_id,
+            "db_assignments": db_assignments,
         }),
     )
     .await
@@ -169,6 +188,7 @@ pub fn run() {
             start_export,
             get_export_progress,
             cancel_export,
+            preview_bus_decoding,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
