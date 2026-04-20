@@ -7,11 +7,13 @@
     sessionId,
     fileName      = "",
     dbAssignments = [],
+    flatten       = false,
     onclose,
   }: {
     sessionId:      string;
     fileName?:      string;
     dbAssignments?: DbAssignment[];
+    flatten?:       boolean;
     onclose:        () => void;
   } = $props();
 
@@ -21,24 +23,36 @@
     return base || "export";
   }
 
-  type Fmt = "tdms" | "mat" | "parquet" | "csv" | "tsv" | "xlsx";
+  type Fmt = "tdms" | "mat" | "parquet" | "csv" | "tsv" | "xlsx" | "mf4";
   let format: Fmt       = $state("tdms");
   let outputPath        = $state("");
   let jobId = $state(null as string | null);
   let job   = $state(null as ExportJob | null);
   let pollTimer: ReturnType<typeof setInterval> | null = null;
 
-  const MULTI_HINT = "One file per channel group when multiple groups are present.";
+  const MULTI_HINT    = "One file per channel group when multiple groups are present.";
+  const FLAT_HINT     = "All groups merged into one table (flatten is on).";
 
-  const FMT_META: Record<Fmt, { label: string; ext: string; hint?: string }> = {
-    tdms:    { label: "NI TDMS (.tdms)",          ext: "tdms" },
-    mat:     { label: "MATLAB (.mat)",             ext: "mat"  },
-    parquet: { label: "Parquet (.parquet)",        ext: "parquet", hint: MULTI_HINT },
-    csv:     { label: "CSV (.csv)",                ext: "csv",     hint: MULTI_HINT },
-    tsv:     { label: "TSV (.tsv)",                ext: "tsv",     hint: MULTI_HINT },
-    xlsx:    { label: "Excel (.xlsx)",             ext: "xlsx",
-               hint: "One worksheet per channel group in a single workbook." },
+  const FMT_META: Record<Fmt, { label: string; ext: string; hint?: string; supportsFlatten: boolean }> = {
+    tdms:    { label: "NI TDMS (.tdms)",          ext: "tdms",    supportsFlatten: false },
+    mat:     { label: "MATLAB (.mat)",             ext: "mat",     supportsFlatten: true  },
+    parquet: { label: "Parquet (.parquet)",        ext: "parquet", supportsFlatten: true  },
+    csv:     { label: "CSV (.csv)",                ext: "csv",     supportsFlatten: true  },
+    tsv:     { label: "TSV (.tsv)",                ext: "tsv",     supportsFlatten: true  },
+    xlsx:    { label: "Excel (.xlsx)",             ext: "xlsx",    supportsFlatten: true  },
+    mf4:     { label: "MF4 (.mf4)",               ext: "mf4",     supportsFlatten: false },
   };
+
+  // Effective flatten: only when format supports it
+  const effectiveFlatten = $derived(flatten && FMT_META[format].supportsFlatten);
+
+  // Derive actual hint: replace multi-file hint with flatten hint when applicable
+  function fmtHint(fmt: Fmt): string | undefined {
+    if (effectiveFlatten && FMT_META[fmt].supportsFlatten) return FLAT_HINT;
+    if (fmt === "parquet" || fmt === "csv" || fmt === "tsv") return flatten ? undefined : MULTI_HINT;
+    if (fmt === "xlsx") return flatten ? undefined : "One worksheet per channel group in a single workbook.";
+    return undefined;
+  }
 
   async function browse() {
     const { ext, label } = FMT_META[format];
@@ -49,16 +63,19 @@
     if (path) outputPath = path as string;
   }
 
-  // Derived active-settings values (Phase A: decoding only)
+  // Derived active-settings values
   const uniqueDecodingDbs   = $derived(new Set(dbAssignments.map(a => a.db_path)));
   const decodingGroupCount  = $derived(new Set(dbAssignments.map(a => a.group_index)).size);
-  const hasActiveSettings   = $derived(dbAssignments.length > 0);
+  const hasActiveSettings   = $derived(dbAssignments.length > 0 || effectiveFlatten);
 
   async function runExport() {
     if (!outputPath || jobId) return;
     try {
-      const r = await startExport(sessionId, format, outputPath,
-                                  dbAssignments.length > 0 ? dbAssignments : undefined);
+      const r = await startExport(
+        sessionId, format, outputPath,
+        dbAssignments.length > 0 ? dbAssignments : undefined,
+        effectiveFlatten,
+      );
       jobId = r.job_id;
       job   = { status: "running", done: 0, total: 0, error: null };
       pollTimer = setInterval(poll, 400);
@@ -141,7 +158,7 @@
     <div class="field">
       <span class="field-label">Format</span>
       <div class="radio-group">
-        {#each (["tdms", "mat", "parquet", "csv", "tsv", "xlsx"] as Fmt[]) as f}
+        {#each (["tdms", "mat", "parquet", "csv", "tsv", "xlsx", "mf4"] as Fmt[]) as f}
           <label class="radio" class:active={format === f}>
             <input
               type="radio"
@@ -155,6 +172,9 @@
           </label>
         {/each}
       </div>
+      {#if flatten && !FMT_META[format].supportsFlatten}
+        <p class="field-hint field-hint-warn">⚠ Flatten is not available for {format.toUpperCase()} — will export normally.</p>
+      {/if}
     </div>
 
     <!-- ── output path ── -->
@@ -171,8 +191,8 @@
         />
         <button class="browse-btn" onclick={browse} disabled={isRunning}>Browse…</button>
       </div>
-      {#if FMT_META[format].hint}
-        <p class="field-hint">{FMT_META[format].hint}</p>
+      {#if fmtHint(format)}
+        <p class="field-hint">{fmtHint(format)}</p>
       {/if}
     </div>
 
@@ -185,6 +205,12 @@
             <div class="strip-row">
               <span class="strip-key">Frame decoding</span>
               <span class="strip-val">{decodingGroupCount} group{decodingGroupCount !== 1 ? "s" : ""} · {uniqueDecodingDbs.size} DB file{uniqueDecodingDbs.size !== 1 ? "s" : ""}</span>
+            </div>
+          {/if}
+          {#if effectiveFlatten}
+            <div class="strip-row">
+              <span class="strip-key">Flatten</span>
+              <span class="strip-val">all groups → single table</span>
             </div>
           {/if}
         </div>
@@ -362,6 +388,9 @@
     font-size: 0.72rem;
     color: #555;
     line-height: 1.4;
+  }
+  .field-hint-warn {
+    color: #c8832a;
   }
 
   /* ── active settings strip ── */

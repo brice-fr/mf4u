@@ -113,6 +113,7 @@ async fn start_export(
     format: String,
     output_path: String,
     db_assignments: Option<Value>,
+    flatten: Option<bool>,
     sidecar: tauri::State<'_, Mutex<Sidecar>>,
 ) -> Result<Value, String> {
     rpc_call(
@@ -123,6 +124,7 @@ async fn start_export(
             "format":         format,
             "output_path":    output_path,
             "db_assignments": db_assignments,
+            "flatten":        flatten.unwrap_or(false),
         }),
     )
     .await

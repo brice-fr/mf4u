@@ -1,7 +1,7 @@
 <script lang="ts">
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-  import { Menu, Submenu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
+  import { Menu, Submenu, MenuItem, CheckMenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
   import { onMount } from "svelte";
   import { openFile, getStructure, closeSession } from "$lib/rpc";
   import type { Metadata, GroupInfo, DbAssignment } from "$lib/rpc";
@@ -20,9 +20,10 @@
   let groups: GroupInfo[]       = $state([]);
   let sessionId: string | null  = $state(null);
   let dragging: boolean         = $state(false);
-  let showExport: boolean       = $state(false);
-  let showAbout: boolean        = $state(false);
+  let showExport: boolean        = $state(false);
+  let showAbout: boolean         = $state(false);
   let showFrameDecoding: boolean = $state(false);
+  let flatten: boolean           = $state(false);
 
   // ── Phase A: frame decoding session config ─────────────────────────────── //
   let decodingConfig: DbAssignment[] = $state([]);
@@ -49,10 +50,13 @@
   // Keep native menu items in sync with reactive state
   $effect(() => { exportMenuItem?.setEnabled(phase === "loaded" && !!sessionId); });
   $effect(() => { frameDecodingMenuItem?.setEnabled(hasRawFrameGroups); });
+  $effect(() => { flattenCheckItem?.setChecked(flatten); });
+  $effect(() => { flattenCheckItem?.setEnabled(phase === "loaded" && !!sessionId); });
 
   // Native menu items we need to update at runtime
-  let exportMenuItem:        Awaited<ReturnType<typeof MenuItem.new>> | null = null;
-  let frameDecodingMenuItem: Awaited<ReturnType<typeof MenuItem.new>> | null = null;
+  let exportMenuItem:        Awaited<ReturnType<typeof MenuItem.new>>       | null = null;
+  let frameDecodingMenuItem: Awaited<ReturnType<typeof MenuItem.new>>       | null = null;
+  let flattenCheckItem:      Awaited<ReturnType<typeof CheckMenuItem.new>>  | null = null;
 
   // ── window title ──────────────────────────────────────────────────────── //
   const APP_TITLE = "mf4 utility";
@@ -73,6 +77,7 @@
     metadata       = null;
     groups         = [];
     decodingConfig = [];   // reset Phase A config on new file open
+    flatten        = false; // reset flatten on new file open
     try {
       const result  = await openFile(path);
       sessionId = result.session_id;
@@ -138,6 +143,14 @@
         action: () => { if (sessionId) showFrameDecoding = true; },
       });
 
+      flattenCheckItem = await CheckMenuItem.new({
+        id: "flatten",
+        text: "Flatten output",
+        checked: false,
+        enabled: false,
+        action: () => { flatten = !flatten; },
+      });
+
       const menu = await Menu.new({
         items: [
           // ① App menu — macOS system menu
@@ -176,6 +189,7 @@
             text: "Export",
             items: [
               frameDecodingMenuItem,
+              flattenCheckItem,
               await PredefinedMenuItem.new({ item: "Separator" }),
               exportMenuItem,
             ],
@@ -209,6 +223,7 @@
       {sessionId}
       fileName={metadata?.file_name ?? ""}
       dbAssignments={decodingConfig}
+      {flatten}
       onclose={() => (showExport = false)}
     />
   {/if}
@@ -230,9 +245,11 @@
     hasRawFrameGroups={hasRawFrameGroups}
     decodingActive={decodingActive}
     decodingDbCount={uniqueDecodingDbs.size}
+    {flatten}
     onopen={pickFile}
     onexport={() => { if (sessionId) showExport = true; }}
     onframedecoding={() => { if (sessionId) showFrameDecoding = true; }}
+    onflattentoggle={() => { flatten = !flatten; }}
   />
 
   <!-- ── idle / error ── -->

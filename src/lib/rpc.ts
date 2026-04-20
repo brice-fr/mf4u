@@ -120,15 +120,17 @@ export async function closeSession(sessionId: string): Promise<void> {
 
 export async function startExport(
   sessionId: string,
-  format: "mat" | "tdms" | "parquet" | "csv" | "tsv" | "xlsx",
+  format: "mat" | "tdms" | "parquet" | "csv" | "tsv" | "xlsx" | "mf4",
   outputPath: string,
   dbAssignments?: DbAssignment[],
+  flatten?: boolean,
 ): Promise<{ job_id: string }> {
   return invoke<{ job_id: string }>("start_export", {
     sessionId,
     format,
     outputPath,
     dbAssignments: dbAssignments && dbAssignments.length > 0 ? dbAssignments : null,
+    flatten: flatten ?? false,
   });
 }
 

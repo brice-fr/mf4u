@@ -471,6 +471,213 @@ class TestExportWithDecoding:
 
 
 # --------------------------------------------------------------------------- #
+# Phase C — Flatten output
+# --------------------------------------------------------------------------- #
+
+class TestFlattenExport:
+    def test_flat_parquet_single_file_for_multi_group(self, multi_group_mf4, tmp_path):
+        """Flatten + parquet should produce exactly one file, not one per group."""
+        import export as exp
+        mdf = _open(multi_group_mf4)
+        out = str(tmp_path / "flat.parquet")
+        try:
+            job_id   = exp.start(mdf, "parquet", out, flatten=True)
+            progress = _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        assert progress["status"] == "done", progress.get("error")
+        parquet_files = [f for f in tmp_path.iterdir() if f.suffix == ".parquet"]
+        assert len(parquet_files) == 1, f"Expected 1 file, got {parquet_files}"
+
+    def test_flat_csv_single_file_for_multi_group(self, multi_group_mf4, tmp_path):
+        """Flatten + csv should produce exactly one file, not one per group."""
+        import export as exp
+        mdf = _open(multi_group_mf4)
+        out = str(tmp_path / "flat.csv")
+        try:
+            job_id   = exp.start(mdf, "csv", out, flatten=True)
+            progress = _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        assert progress["status"] == "done", progress.get("error")
+        csv_files = [f for f in tmp_path.iterdir() if f.suffix == ".csv"]
+        assert len(csv_files) == 1, f"Expected 1 file, got {csv_files}"
+
+    def test_flat_csv_has_all_group_channels(self, multi_group_mf4, tmp_path):
+        """Flat CSV should contain channels from all 4 groups in a single header row."""
+        import csv
+        import export as exp
+        mdf = _open(multi_group_mf4)
+        out = str(tmp_path / "flat.csv")
+        try:
+            job_id = exp.start(mdf, "csv", out, flatten=True)
+            _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        with open(out, newline="", encoding="utf-8") as fh:
+            header = next(csv.reader(fh))
+        # multi_group.mf4 has channels: EngineSpeed, ThrottlePos, VehicleSpeed,
+        # SteeringAngle, CoolantTemp, OilTemp, BattVoltage, BattCurrent
+        expected_channels = {
+            "EngineSpeed", "ThrottlePos",
+            "VehicleSpeed", "SteeringAngle",
+            "CoolantTemp", "OilTemp",
+            "BattVoltage", "BattCurrent",
+        }
+        assert "timestamps" in header
+        header_set = set(header)
+        assert expected_channels <= header_set, (
+            f"Missing channels: {expected_channels - header_set}"
+        )
+
+    def test_flat_xlsx_single_sheet_named_flattened(self, multi_group_mf4, tmp_path):
+        """Flat XLSX should have exactly one sheet named 'Flattened'."""
+        import export as exp
+        import openpyxl  # type: ignore[import-untyped]
+        mdf = _open(multi_group_mf4)
+        out = str(tmp_path / "flat.xlsx")
+        try:
+            job_id   = exp.start(mdf, "xlsx", out, flatten=True)
+            progress = _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        assert progress["status"] == "done", progress.get("error")
+        wb = openpyxl.load_workbook(out, read_only=True)
+        assert wb.sheetnames == ["Flattened"], f"Got sheets: {wb.sheetnames}"
+        wb.close()
+
+    def test_flat_mat_creates_single_file(self, multi_group_mf4, tmp_path):
+        """Flatten + MAT should create one .mat file."""
+        import export as exp
+        import scipy.io as sio  # type: ignore[import-untyped]
+        mdf = _open(multi_group_mf4)
+        out = str(tmp_path / "flat.mat")
+        try:
+            job_id   = exp.start(mdf, "mat", out, flatten=True)
+            progress = _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        assert progress["status"] == "done", progress.get("error")
+        assert (tmp_path / "flat.mat").is_file()
+        mat = sio.loadmat(out)
+        data_keys = [k for k in mat if not k.startswith("_")]
+        assert len(data_keys) >= 8   # 8 channels + timestamps
+
+    def test_flat_tsv_single_file(self, multi_group_mf4, tmp_path):
+        """Flatten + tsv should produce one file."""
+        import export as exp
+        mdf = _open(multi_group_mf4)
+        out = str(tmp_path / "flat.tsv")
+        try:
+            job_id   = exp.start(mdf, "tsv", out, flatten=True)
+            progress = _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        assert progress["status"] == "done", progress.get("error")
+        tsv_files = [f for f in tmp_path.iterdir() if f.suffix == ".tsv"]
+        assert len(tsv_files) == 1
+
+    def test_flat_has_nan_filled_timestamps(self, multi_group_mf4, tmp_path):
+        """Flat parquet table should be longer than any single group."""
+        import export as exp
+        import pyarrow.parquet as pq  # type: ignore[import-untyped]
+        mdf = _open(multi_group_mf4)
+        out = str(tmp_path / "flat.parquet")
+        try:
+            job_id = exp.start(mdf, "parquet", out, flatten=True)
+            _wait_for_job(job_id)
+            # individual group sizes: 50, 100, 25, 75 → union > 100 rows
+            max_group_rows = max(len(g.channels[0:1] or [0])
+                                 for g in mdf.groups if g.channels)
+        finally:
+            mdf.close()
+        table = pq.read_table(out)
+        assert table.num_rows > 100   # multi_group has up to 100 rows per group
+
+    def test_flat_tdms_ignores_flatten(self, multi_group_mf4, tmp_path):
+        """Flatten has no effect for TDMS — export still runs normally."""
+        import export as exp
+        mdf = _open(multi_group_mf4)
+        out = str(tmp_path / "flat.tdms")
+        try:
+            job_id   = exp.start(mdf, "tdms", out, flatten=True)
+            progress = _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        assert progress["status"] == "done", progress.get("error")
+        assert (tmp_path / "flat.tdms").is_file()
+
+
+# --------------------------------------------------------------------------- #
+# Phase D — MF4 re-export
+# --------------------------------------------------------------------------- #
+
+class TestMf4Export:
+    def test_mf4_creates_file(self, minimal_mf4, tmp_path):
+        """MF4 re-export should create the output file."""
+        import export as exp
+        mdf = _open(minimal_mf4)
+        out = str(tmp_path / "re_export.mf4")
+        try:
+            job_id   = exp.start(mdf, "mf4", out)
+            progress = _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        assert progress["status"] == "done", progress.get("error")
+        assert (tmp_path / "re_export.mf4").is_file()
+        assert (tmp_path / "re_export.mf4").stat().st_size > 0
+
+    def test_mf4_output_readable_by_asammdf(self, minimal_mf4, tmp_path):
+        """The re-exported MF4 should be parseable and contain the original channels."""
+        import export as exp
+        mdf = _open(minimal_mf4)
+        out = str(tmp_path / "re_export.mf4")
+        try:
+            job_id = exp.start(mdf, "mf4", out)
+            _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        mdf2 = _open(out)
+        try:
+            all_channels = [
+                str(ch.name)
+                for g in mdf2.groups
+                for ch in g.channels
+            ]
+        finally:
+            mdf2.close()
+        assert any("Ch" in c for c in all_channels), (
+            f"Expected Ch* channels, got: {all_channels}"
+        )
+
+    def test_mf4_progress_total_is_1(self, minimal_mf4, tmp_path):
+        """MF4 export uses total=1 as a single-step progress indicator."""
+        import export as exp
+        mdf = _open(minimal_mf4)
+        out = str(tmp_path / "re_export.mf4")
+        try:
+            job_id   = exp.start(mdf, "mf4", out)
+            progress = _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        assert progress["total"] == 1
+        assert progress["done"]  == 1
+
+    def test_mf4_multi_group_progress_total_is_1(self, multi_group_mf4, tmp_path):
+        """MF4 re-export always has total=1 regardless of group count."""
+        import export as exp
+        mdf = _open(multi_group_mf4)
+        out = str(tmp_path / "re_export.mf4")
+        try:
+            job_id   = exp.start(mdf, "mf4", out)
+            progress = _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        assert progress["status"] == "done", progress.get("error")
+        assert progress["total"] == 1
+
+
+# --------------------------------------------------------------------------- #
 # Cancellation
 # --------------------------------------------------------------------------- #
 

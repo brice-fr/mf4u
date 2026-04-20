@@ -253,16 +253,18 @@ def handle_start_export(req: dict) -> dict:
     fmt            = params.get("format", "")
     output_path    = params.get("output_path", "")
     db_assignments = params.get("db_assignments") or None  # None if absent/null/[]
+    flatten        = bool(params.get("flatten") or False)
 
-    if fmt not in ("mat", "tdms", "parquet", "csv", "tsv", "xlsx"):
-        return _err(req, 1001, "params.format must be 'mat', 'tdms', 'parquet', 'csv', 'tsv', or 'xlsx'")
+    if fmt not in ("mat", "tdms", "parquet", "csv", "tsv", "xlsx", "mf4"):
+        return _err(req, 1001,
+                    "params.format must be 'mat', 'tdms', 'parquet', 'csv', 'tsv', 'xlsx', or 'mf4'")
     if not output_path:
         return _err(req, 1001, "params.output_path is required")
 
     try:
         import export as exp
         job_id = exp.start(session["mdf"], fmt, output_path,
-                           db_assignments=db_assignments)
+                           db_assignments=db_assignments, flatten=flatten)
         return _ok(req, {"job_id": job_id})
     except Exception as exc:  # noqa: BLE001
         return _err(req, 1001, f"failed to start export: {exc}")

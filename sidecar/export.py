@@ -48,24 +48,56 @@ def start(
     fmt: str,
     output_path: str,
     db_assignments: "list[dict] | None" = None,
+    flatten: bool = False,
 ) -> str:
     """Start an export job in a background thread; return its job_id.
 
     If *db_assignments* is provided (a list of ``{"group_index": int, "db_path": str}``
     dicts in priority order), ``extract_bus_logging`` is applied before writing.
+
+    If *flatten* is ``True`` and the format supports it (MAT / Parquet / CSV / TSV /
+    XLSX), all channel groups are merged into a single timestamp-union table with
+    NaN-filling for channels absent at a given timestamp.  TDMS and MF4 do not
+    support flatten and will be exported normally.
     """
+    # flatten only applies to tabular formats; MF4 always uses a single save() step
+    do_flatten    = flatten and fmt not in ("tdms", "mf4")
+    initial_total = 1 if fmt == "mf4" else len(mdf.groups)
+
     job_id = str(uuid.uuid4())
-    job    = _Job(total=len(mdf.groups))
+    job    = _Job(total=initial_total)
     _JOBS[job_id] = job
 
     def _run() -> None:
         try:
-            active_mdf = mdf
-            if db_assignments:
-                active_mdf = _build_decoded_mdf(mdf, db_assignments)
-                job.total  = len(active_mdf.groups)
+            active_mdf   = mdf
+            original_mdf: Any = None
 
-            if fmt == "mat":
+            if db_assignments:
+                original_mdf = mdf
+                active_mdf   = _build_decoded_mdf(mdf, db_assignments)
+                if fmt != "mf4":
+                    job.total = len(active_mdf.groups)
+
+            if fmt == "mf4":
+                _do_mf4(active_mdf, output_path, job, original_mdf=original_mdf)
+            elif do_flatten:
+                # Phase C — collect all groups into a flat table, then write once
+                ts, cols = _build_flat_table(active_mdf, job)
+                if not job.cancel_requested and cols:
+                    if fmt == "mat":
+                        _write_flat_mat(output_path, ts, cols)
+                    elif fmt == "parquet":
+                        job._cleanup.append(output_path)
+                        _write_flat_parquet(output_path, ts, cols)
+                    elif fmt in ("csv", "tsv"):
+                        job._cleanup.append(output_path)
+                        _write_flat_csv(output_path, ts, cols,
+                                        delimiter="," if fmt == "csv" else "\t")
+                    elif fmt == "xlsx":
+                        job._cleanup.append(output_path)
+                        _write_flat_xlsx(output_path, ts, cols)
+            elif fmt == "mat":
                 _do_mat(active_mdf, output_path, job)
             elif fmt == "tdms":
                 _do_tdms(active_mdf, output_path, job)
@@ -81,6 +113,7 @@ def start(
                 job.error  = f"unsupported format: {fmt!r}"
                 job.status = "error"
                 return
+
             # Determine which files to remove on cancel / error
             to_delete = job._cleanup if job._cleanup else [output_path]
             if job.cancel_requested:
@@ -536,6 +569,239 @@ def _do_xlsx(mdf: Any, output_path: str, job: _Job) -> None:
             ws.append(row)
 
         job.done = i + 1
+
+    wb.save(output_path)
+
+
+# --------------------------------------------------------------------------- #
+# .mf4 re-export (Phase D)
+# --------------------------------------------------------------------------- #
+
+def _do_mf4(
+    mdf: Any,
+    output_path: str,
+    job: _Job,
+    original_mdf: Any = None,
+) -> None:
+    """Re-export *mdf* to an MF4 file using ``MDF.save()``.
+
+    Progress: total = 1; done = 1 after ``save()`` returns.
+
+    When *original_mdf* is provided (i.e., *mdf* came from
+    ``extract_bus_logging``), the original HD metadata fields are copied
+    onto the decoded MDF header before saving so provenance is preserved.
+    """
+    job.total = 1
+    job.done  = 0
+
+    if original_mdf is not None:
+        try:
+            src_hdr = original_mdf.header
+            dst_hdr = mdf.header
+            for attr in ("author", "department", "project", "subject", "comment"):
+                val = getattr(src_hdr, attr, None)
+                if val is not None:
+                    try:
+                        setattr(dst_hdr, attr, val)
+                    except Exception:  # noqa: BLE001
+                        pass
+        except Exception:  # noqa: BLE001
+            pass
+
+    job._cleanup.append(output_path)
+    mdf.save(output_path, overwrite=True)
+    job.done = 1
+
+
+# --------------------------------------------------------------------------- #
+# Flatten helpers (Phase C)
+# --------------------------------------------------------------------------- #
+
+def _build_flat_table(
+    mdf: Any,
+    job: _Job,
+) -> "tuple[Any, dict[str, Any]]":
+    """Collect all numeric channels across all groups into a flat timestamp-union table.
+
+    Returns ``(timestamps, columns)`` where *timestamps* is a sorted float64
+    array of every unique sample time across all groups and *columns* is an
+    ``{name: float64_array}`` dict with ``nan`` at timestamps where a channel
+    has no sample.
+
+    Progress: ``job.done`` is incremented to ``i + 1`` after each group.
+    """
+    import numpy as np
+
+    seen_names: set[str]  = set()
+    group_data: list[Any] = []   # [(float64_ts, {col_name: float64_arr})]
+
+    for i, group in enumerate(mdf.groups):
+        if job.cancel_requested:
+            return np.array([]), {}
+
+        ts_arr:  "Any | None"    = None
+        columns: dict[str, Any]  = {}
+
+        for ch in group.channels:
+            ch_name = str(ch.name or "")
+            if not ch_name:
+                continue
+            try:
+                sig = mdf.get(ch_name, group=i, raw=False,
+                              ignore_invalidation_bits=True)
+                if not (hasattr(sig.samples, "dtype")
+                        and np.issubdtype(sig.samples.dtype, np.number)):
+                    continue
+                if ts_arr is None and sig.timestamps is not None:
+                    ts_arr = sig.timestamps.astype(np.float64)
+                columns[ch_name] = sig.samples
+            except Exception:  # noqa: BLE001
+                pass
+
+        if ts_arr is None or not columns:
+            job.done = i + 1
+            continue
+
+        # Align all arrays in this group to the shortest length
+        min_len = min(len(ts_arr), min(len(a) for a in columns.values()))
+
+        # Deduplicate column names across groups by appending _g{i}
+        aligned: dict[str, Any] = {}
+        for ch_name, arr in columns.items():
+            key = ch_name
+            if key in seen_names:
+                key = f"{ch_name}_g{i}"
+                cnt = 2
+                while key in seen_names:
+                    key = f"{ch_name}_g{i}_{cnt}"
+                    cnt += 1
+            seen_names.add(key)
+            aligned[key] = arr[:min_len].astype(np.float64)
+
+        group_data.append((ts_arr[:min_len], aligned))
+        job.done = i + 1
+
+    if not group_data:
+        return np.array([]), {}
+
+    # Build sorted union of all group timestamps
+    all_ts = np.unique(np.concatenate([ts for ts, _ in group_data]))
+
+    # NaN-fill each group's channels at missing union timestamps
+    merged: dict[str, Any] = {}
+    for g_ts, g_cols in group_data:
+        indices = np.searchsorted(all_ts, g_ts)
+        for col_name, arr in g_cols.items():
+            col = np.full(len(all_ts), np.nan, dtype=np.float64)
+            col[indices] = arr
+            merged[col_name] = col
+
+    return all_ts, merged
+
+
+def _write_flat_mat(
+    output_path: str,
+    timestamps: Any,
+    columns: dict[str, Any],
+) -> None:
+    try:
+        import scipy.io as sio  # type: ignore[import-untyped]
+    except ImportError as exc:
+        raise RuntimeError(f"scipy is required for .mat export: {exc}") from exc
+
+    seen: dict[str, int] = {}
+    mat_data: dict[str, Any] = {}
+    if len(timestamps):
+        mat_data[_mat_var("timestamps", seen)] = timestamps
+    for col_name, arr in columns.items():
+        mat_data[_mat_var(col_name, seen)] = arr
+    sio.savemat(output_path, mat_data, do_compression=True)
+
+
+def _write_flat_parquet(
+    output_path: str,
+    timestamps: Any,
+    columns: dict[str, Any],
+) -> None:
+    try:
+        import pyarrow as pa            # type: ignore[import-untyped]
+        import pyarrow.parquet as pq    # type: ignore[import-untyped]
+    except ImportError as exc:
+        raise RuntimeError(
+            f"pyarrow is required for Parquet export: {exc}"
+        ) from exc
+
+    arrow_cols: dict[str, Any] = {}
+    if len(timestamps):
+        arrow_cols["timestamps"] = pa.array(timestamps, type=pa.float64())
+    for col_name, arr in columns.items():
+        try:
+            arrow_cols[col_name] = pa.array(arr)
+        except Exception:  # noqa: BLE001
+            pass
+    if arrow_cols:
+        pq.write_table(pa.table(arrow_cols), output_path, compression="snappy")
+
+
+def _write_flat_csv(
+    output_path: str,
+    timestamps: Any,
+    columns: dict[str, Any],
+    delimiter: str = ",",
+) -> None:
+    import csv as _csv
+
+    col_names = list(columns.keys())
+    has_ts    = len(timestamps) > 0
+    n         = len(timestamps) if has_ts else (
+        max((len(a) for a in columns.values()), default=0)
+    )
+
+    with open(output_path, "w", newline="", encoding="utf-8") as fh:
+        writer = _csv.writer(fh, delimiter=delimiter)
+        header = (["timestamps"] if has_ts else []) + col_names
+        writer.writerow(header)
+        col_arrs = [columns[name] for name in col_names]
+        for j in range(n):
+            row = (
+                [float(timestamps[j])] if has_ts else []
+            ) + [float(a[j]) for a in col_arrs]
+            writer.writerow(row)
+
+
+def _write_flat_xlsx(
+    output_path: str,
+    timestamps: Any,
+    columns: dict[str, Any],
+) -> None:
+    try:
+        import openpyxl  # type: ignore[import-untyped]
+    except ImportError as exc:
+        raise RuntimeError(f"openpyxl is required for .xlsx export: {exc}") from exc
+
+    import math
+
+    wb = openpyxl.Workbook(write_only=True)
+    ws = wb.create_sheet(title="Flattened")
+
+    col_names = list(columns.keys())
+    has_ts    = len(timestamps) > 0
+    header    = (["timestamps"] if has_ts else []) + col_names
+    ws.append(header)
+
+    n        = len(timestamps) if has_ts else (
+        max((len(a) for a in columns.values()), default=0)
+    )
+    col_arrs = [columns[name] for name in col_names]
+
+    for j in range(n):
+        row = (
+            [float(timestamps[j])] if has_ts else []
+        ) + [
+            None if math.isnan(a[j]) else float(a[j])
+            for a in col_arrs
+        ]
+        ws.append(row)
 
     wb.save(output_path)
 

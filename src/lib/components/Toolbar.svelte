@@ -5,18 +5,22 @@
     hasRawFrameGroups = false,
     decodingActive    = false,
     decodingDbCount   = 0,
+    flatten           = false,
     onopen            = () => {},
     onexport          = () => {},
     onframedecoding   = () => {},
+    onflattentoggle   = () => {},
   }: {
     loading?:           boolean;
     hasFile?:           boolean;
     hasRawFrameGroups?: boolean;
     decodingActive?:    boolean;
     decodingDbCount?:   number;
+    flatten?:           boolean;
     onopen?:            () => void;
     onexport?:          () => void;
     onframedecoding?:   () => void;
+    onflattentoggle?:   () => void;
   } = $props();
 </script>
 
@@ -71,6 +75,27 @@
       <span class="active-badge">{decodingDbCount} DB</span>
     {/if}
   </div>
+
+  <!-- Flatten toggle -->
+  <button
+    class="icon-btn"
+    class:active={flatten}
+    onclick={onflattentoggle}
+    disabled={!hasFile}
+    title={flatten ? "Flatten output: on — click to toggle off" : "Flatten output: off — merge all groups into one table"}
+    aria-label="Toggle flatten output"
+    aria-pressed={flatten}
+  >
+    <!-- Two rows merging into one -->
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+         fill="none" stroke="currentColor" stroke-width="1.8"
+         stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3" y="3" width="18" height="5" rx="1"/>
+      <rect x="3" y="10" width="18" height="5" rx="1"/>
+      <line x1="12" y1="17" x2="12" y2="21"/>
+      <polyline points="9 18.5 12 21 15 18.5"/>
+    </svg>
+  </button>
 
   <!-- Export -->
   <button
