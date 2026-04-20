@@ -5,10 +5,13 @@
   import { onMount } from "svelte";
   import { openFile, getStructure, closeSession } from "$lib/rpc";
   import type { Metadata, GroupInfo, DbAssignment } from "$lib/rpc";
+  import { loadPrefs, savePrefs } from "$lib/prefs";
+  import type { AppPrefs } from "$lib/prefs";
   import MetadataPanel from "$lib/components/MetadataPanel.svelte";
   import SignalTree from "$lib/components/SignalTree.svelte";
   import ExportDialog from "$lib/components/ExportDialog.svelte";
   import FrameDecodingDialog from "$lib/components/FrameDecodingDialog.svelte";
+  import PreferencesDialog from "$lib/components/PreferencesDialog.svelte";
   import AboutDialog from "$lib/components/AboutDialog.svelte";
   import Toolbar from "$lib/components/Toolbar.svelte";
 
@@ -20,10 +23,14 @@
   let groups: GroupInfo[]       = $state([]);
   let sessionId: string | null  = $state(null);
   let dragging: boolean         = $state(false);
-  let showExport: boolean        = $state(false);
-  let showAbout: boolean         = $state(false);
+  let showExport:       boolean  = $state(false);
+  let showAbout:        boolean  = $state(false);
   let showFrameDecoding: boolean = $state(false);
-  let flatten: boolean           = $state(false);
+  let showPreferences:  boolean  = $state(false);
+  let flatten:          boolean  = $state(false);
+
+  // ── App-wide preferences (persisted in localStorage) ──────────────────── //
+  let prefs: AppPrefs = $state(loadPrefs());
 
   // ── Phase A: frame decoding session config ─────────────────────────────── //
   let decodingConfig: DbAssignment[] = $state([]);
@@ -57,6 +64,7 @@
   let exportMenuItem:        Awaited<ReturnType<typeof MenuItem.new>>       | null = null;
   let frameDecodingMenuItem: Awaited<ReturnType<typeof MenuItem.new>>       | null = null;
   let flattenCheckItem:      Awaited<ReturnType<typeof CheckMenuItem.new>>  | null = null;
+  let preferencesMenuItem:   Awaited<ReturnType<typeof MenuItem.new>>       | null = null;
 
   // ── window title ──────────────────────────────────────────────────────── //
   const APP_TITLE = "mf4 utility";
@@ -151,6 +159,13 @@
         action: () => { flatten = !flatten; },
       });
 
+      preferencesMenuItem = await MenuItem.new({
+        id: "preferences",
+        text: "Preferences…",
+        accelerator: "CmdOrCtrl+,",
+        action: () => { showPreferences = true; },
+      });
+
       const menu = await Menu.new({
         items: [
           // ① App menu — macOS system menu
@@ -158,6 +173,8 @@
             text: "mf4u",
             items: [
               aboutItem,
+              await PredefinedMenuItem.new({ item: "Separator" }),
+              preferencesMenuItem,
               await PredefinedMenuItem.new({ item: "Separator" }),
               await PredefinedMenuItem.new({ item: "Services" }),
               await PredefinedMenuItem.new({ item: "Separator" }),
@@ -218,12 +235,21 @@
     <AboutDialog open={showAbout} onclose={() => (showAbout = false)} />
   {/if}
 
+  {#if showPreferences}
+    <PreferencesDialog
+      {prefs}
+      onchange={(p) => { prefs = p; }}
+      onclose={() => (showPreferences = false)}
+    />
+  {/if}
+
   {#if showExport && sessionId}
     <ExportDialog
       {sessionId}
       fileName={metadata?.file_name ?? ""}
       dbAssignments={decodingConfig}
       {flatten}
+      matLinkGroups={prefs.matLinkGroups}
       onclose={() => (showExport = false)}
     />
   {/if}
@@ -250,6 +276,7 @@
     onexport={() => { if (sessionId) showExport = true; }}
     onframedecoding={() => { if (sessionId) showFrameDecoding = true; }}
     onflattentoggle={() => { flatten = !flatten; }}
+    onpreferences={() => { showPreferences = true; }}
   />
 
   <!-- ── idle / error ── -->

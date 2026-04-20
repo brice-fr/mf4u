@@ -66,7 +66,6 @@ class TestMatExport:
         finally:
             mdf.close()
         mat = sio.loadmat(out)
-        # At least one channel should be present
         data_keys = [k for k in mat if not k.startswith("_")]
         assert len(data_keys) >= 1
 
@@ -83,6 +82,94 @@ class TestMatExport:
         mat = sio.loadmat(out)
         # Ch1, Ch2, Ch3 are numeric → should be exported
         assert any("Ch" in k for k in mat), f"Expected Ch* keys, got {list(mat)}"
+
+    def test_mat_always_includes_timestamp_vector(self, minimal_mf4, tmp_path):
+        """MAT export must include a t1 key for the timestamp vector."""
+        import export as exp
+        import scipy.io as sio  # type: ignore[import-untyped]
+        mdf = _open(minimal_mf4)
+        out = str(tmp_path / "out.mat")
+        try:
+            job_id = exp.start(mdf, "mat", out)
+            _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        mat = sio.loadmat(out)
+        assert "t1" in mat, f"Expected 't1' timestamp key, got keys: {[k for k in mat if not k.startswith('_')]}"
+
+    def test_mat_multi_group_timestamp_vectors(self, multi_group_mf4, tmp_path):
+        """Multi-group MAT export must include t1, t2, t3, t4 timestamp vectors."""
+        import export as exp
+        import scipy.io as sio  # type: ignore[import-untyped]
+        mdf = _open(multi_group_mf4)
+        out = str(tmp_path / "out.mat")
+        try:
+            job_id = exp.start(mdf, "mat", out)
+            _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        mat = sio.loadmat(out)
+        for t_key in ("t1", "t2", "t3", "t4"):
+            assert t_key in mat, (
+                f"Expected '{t_key}' timestamp key, got: {[k for k in mat if not k.startswith('_')]}"
+            )
+
+    def test_mat_link_groups_suffixes_channels(self, minimal_mf4, tmp_path):
+        """With mat_link_groups=True, channel names are suffixed with _t1."""
+        import export as exp
+        import scipy.io as sio  # type: ignore[import-untyped]
+        mdf = _open(minimal_mf4)
+        out = str(tmp_path / "out.mat")
+        try:
+            job_id = exp.start(mdf, "mat", out, mat_link_groups=True)
+            _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        mat = sio.loadmat(out)
+        data_keys = [k for k in mat if not k.startswith("_")]
+        # Every data key (not t1 itself) should end with _t1
+        data_channels = [k for k in data_keys if k != "t1"]
+        assert all(k.endswith("_t1") for k in data_channels), (
+            f"Expected all channel keys to end with _t1, got: {data_keys}"
+        )
+
+    def test_mat_link_groups_multi_group_suffixes(self, multi_group_mf4, tmp_path):
+        """With mat_link_groups=True across 4 groups, each channel is suffixed with
+        its group's time-vector label (t1…t4)."""
+        import export as exp
+        import scipy.io as sio  # type: ignore[import-untyped]
+        mdf = _open(multi_group_mf4)
+        out = str(tmp_path / "out.mat")
+        try:
+            job_id = exp.start(mdf, "mat", out, mat_link_groups=True)
+            _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        mat = sio.loadmat(out)
+        keys = {k for k in mat if not k.startswith("_")}
+        # Time vectors must be present
+        assert {"t1", "t2", "t3", "t4"}.issubset(keys), f"Missing time keys in: {keys}"
+        # multi_group has channels: EngineSpeed, ThrottlePos in group 0 → _t1 suffix
+        assert "EngineSpeed_t1" in keys, f"Expected EngineSpeed_t1 in {keys}"
+        assert "ThrottlePos_t1" in keys, f"Expected ThrottlePos_t1 in {keys}"
+
+    def test_mat_link_groups_false_no_suffix(self, minimal_mf4, tmp_path):
+        """With mat_link_groups=False (default), channels are NOT suffixed."""
+        import export as exp
+        import scipy.io as sio  # type: ignore[import-untyped]
+        mdf = _open(minimal_mf4)
+        out = str(tmp_path / "out.mat")
+        try:
+            job_id = exp.start(mdf, "mat", out, mat_link_groups=False)
+            _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        mat = sio.loadmat(out)
+        data_keys = [k for k in mat if not k.startswith("_")]
+        # Should have Ch1, Ch2, Ch3 (not Ch1_t1, etc.)
+        assert any(k == "Ch1" for k in data_keys), (
+            f"Expected Ch1 without suffix, got: {data_keys}"
+        )
 
 
 # --------------------------------------------------------------------------- #

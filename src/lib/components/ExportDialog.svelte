@@ -5,15 +5,17 @@
 
   let {
     sessionId,
-    fileName      = "",
-    dbAssignments = [],
-    flatten       = false,
+    fileName       = "",
+    dbAssignments  = [],
+    flatten        = false,
+    matLinkGroups  = false,
     onclose,
   }: {
     sessionId:      string;
     fileName?:      string;
     dbAssignments?: DbAssignment[];
     flatten?:       boolean;
+    matLinkGroups?: boolean;
     onclose:        () => void;
   } = $props();
 
@@ -24,35 +26,38 @@
   }
 
   type Fmt = "tdms" | "mat" | "parquet" | "csv" | "tsv" | "xlsx" | "mf4";
-  let format: Fmt       = $state("tdms");
+  let format = $state<Fmt>("tdms");
   let outputPath        = $state("");
   let jobId = $state(null as string | null);
   let job   = $state(null as ExportJob | null);
   let pollTimer: ReturnType<typeof setInterval> | null = null;
 
-  const MULTI_HINT    = "One file per channel group when multiple groups are present.";
-  const FLAT_HINT     = "All groups merged into one table (flatten is on).";
+  const MULTI_HINT = "One file per channel group when multiple groups are present.";
+  const FLAT_HINT  = "All groups merged into one table (flatten is on).";
 
-  const FMT_META: Record<Fmt, { label: string; ext: string; hint?: string; supportsFlatten: boolean }> = {
-    tdms:    { label: "NI TDMS (.tdms)",          ext: "tdms",    supportsFlatten: false },
-    mat:     { label: "MATLAB (.mat)",             ext: "mat",     supportsFlatten: true  },
-    parquet: { label: "Parquet (.parquet)",        ext: "parquet", supportsFlatten: true  },
-    csv:     { label: "CSV (.csv)",                ext: "csv",     supportsFlatten: true  },
-    tsv:     { label: "TSV (.tsv)",                ext: "tsv",     supportsFlatten: true  },
-    xlsx:    { label: "Excel (.xlsx)",             ext: "xlsx",    supportsFlatten: true  },
-    mf4:     { label: "MF4 (.mf4)",               ext: "mf4",     supportsFlatten: false },
+  const FMT_META: Record<Fmt, {
+    label:           string;
+    ext:             string;
+    supportsFlatten: boolean;
+    supportsTimeLink: boolean;
+    /** Hint shown below the output-path field in normal (non-flatten) mode. */
+    staticHint?:     string;
+  }> = {
+    tdms:    { label: "NI TDMS (.tdms)",    ext: "tdms",    supportsFlatten: false, supportsTimeLink: false },
+    mat:     { label: "MATLAB (.mat)",      ext: "mat",     supportsFlatten: true,  supportsTimeLink: true  },
+    parquet: { label: "Parquet (.parquet)", ext: "parquet", supportsFlatten: true,  supportsTimeLink: false, staticHint: MULTI_HINT },
+    csv:     { label: "CSV (.csv)",         ext: "csv",     supportsFlatten: true,  supportsTimeLink: false, staticHint: MULTI_HINT },
+    tsv:     { label: "TSV (.tsv)",         ext: "tsv",     supportsFlatten: true,  supportsTimeLink: false, staticHint: MULTI_HINT },
+    xlsx:    { label: "Excel (.xlsx)",      ext: "xlsx",    supportsFlatten: true,  supportsTimeLink: false,
+               staticHint: "One worksheet per channel group in a single workbook." },
+    mf4:     { label: "MF4 (.mf4)",        ext: "mf4",     supportsFlatten: false, supportsTimeLink: false },
   };
 
   // Effective flatten: only when format supports it
   const effectiveFlatten = $derived(flatten && FMT_META[format].supportsFlatten);
 
-  // Derive actual hint: replace multi-file hint with flatten hint when applicable
-  function fmtHint(fmt: Fmt): string | undefined {
-    if (effectiveFlatten && FMT_META[fmt].supportsFlatten) return FLAT_HINT;
-    if (fmt === "parquet" || fmt === "csv" || fmt === "tsv") return flatten ? undefined : MULTI_HINT;
-    if (fmt === "xlsx") return flatten ? undefined : "One worksheet per channel group in a single workbook.";
-    return undefined;
-  }
+  // Per-format hint shown under the output path field
+  const fmtHint = $derived(effectiveFlatten ? FLAT_HINT : FMT_META[format].staticHint);
 
   async function browse() {
     const { ext, label } = FMT_META[format];
@@ -64,9 +69,10 @@
   }
 
   // Derived active-settings values
-  const uniqueDecodingDbs   = $derived(new Set(dbAssignments.map(a => a.db_path)));
-  const decodingGroupCount  = $derived(new Set(dbAssignments.map(a => a.group_index)).size);
-  const hasActiveSettings   = $derived(dbAssignments.length > 0 || effectiveFlatten);
+  const uniqueDecodingDbs    = $derived(new Set(dbAssignments.map(a => a.db_path)));
+  const decodingGroupCount   = $derived(new Set(dbAssignments.map(a => a.group_index)).size);
+  const effectiveMatLink     = $derived(matLinkGroups && FMT_META[format].supportsTimeLink && !effectiveFlatten);
+  const hasActiveSettings    = $derived(dbAssignments.length > 0 || effectiveFlatten || effectiveMatLink);
 
   async function runExport() {
     if (!outputPath || jobId) return;
@@ -75,6 +81,7 @@
         sessionId, format, outputPath,
         dbAssignments.length > 0 ? dbAssignments : undefined,
         effectiveFlatten,
+        effectiveMatLink,
       );
       jobId = r.job_id;
       job   = { status: "running", done: 0, total: 0, error: null };
@@ -191,8 +198,8 @@
         />
         <button class="browse-btn" onclick={browse} disabled={isRunning}>Browse…</button>
       </div>
-      {#if fmtHint(format)}
-        <p class="field-hint">{fmtHint(format)}</p>
+      {#if fmtHint}
+        <p class="field-hint">{fmtHint}</p>
       {/if}
     </div>
 
@@ -211,6 +218,12 @@
             <div class="strip-row">
               <span class="strip-key">Flatten</span>
               <span class="strip-val">all groups → single table</span>
+            </div>
+          {/if}
+          {#if effectiveMatLink}
+            <div class="strip-row">
+              <span class="strip-key">Time-group link</span>
+              <span class="strip-val">channels suffixed t1, t2, …</span>
             </div>
           {/if}
         </div>

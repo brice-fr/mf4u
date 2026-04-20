@@ -114,17 +114,19 @@ async fn start_export(
     output_path: String,
     db_assignments: Option<Value>,
     flatten: Option<bool>,
+    mat_link_groups: Option<bool>,
     sidecar: tauri::State<'_, Mutex<Sidecar>>,
 ) -> Result<Value, String> {
     rpc_call(
         &sidecar,
         "start_export",
         json!({
-            "session_id":     session_id,
-            "format":         format,
-            "output_path":    output_path,
-            "db_assignments": db_assignments,
-            "flatten":        flatten.unwrap_or(false),
+            "session_id":      session_id,
+            "format":          format,
+            "output_path":     output_path,
+            "db_assignments":  db_assignments,
+            "flatten":         flatten.unwrap_or(false),
+            "mat_link_groups": mat_link_groups.unwrap_or(false),
         }),
     )
     .await

@@ -49,6 +49,7 @@ def start(
     output_path: str,
     db_assignments: "list[dict] | None" = None,
     flatten: bool = False,
+    mat_link_groups: bool = False,
 ) -> str:
     """Start an export job in a background thread; return its job_id.
 
@@ -98,7 +99,8 @@ def start(
                         job._cleanup.append(output_path)
                         _write_flat_xlsx(output_path, ts, cols)
             elif fmt == "mat":
-                _do_mat(active_mdf, output_path, job)
+                _do_mat(active_mdf, output_path, job,
+                        mat_link_groups=mat_link_groups)
             elif fmt == "tdms":
                 _do_tdms(active_mdf, output_path, job)
             elif fmt == "parquet":
@@ -208,7 +210,23 @@ def cancel(job_id: str) -> None:
 # .mat export
 # --------------------------------------------------------------------------- #
 
-def _do_mat(mdf: Any, output_path: str, job: _Job) -> None:
+def _do_mat(
+    mdf: Any,
+    output_path: str,
+    job: _Job,
+    mat_link_groups: bool = False,
+) -> None:
+    """Write a ``.mat`` v5 file.
+
+    Each non-empty channel group produces a timestamp vector named ``t1``,
+    ``t2``, … in the output file.  Channel variables are named with the
+    standard ``_mat_var`` sanitiser.
+
+    When *mat_link_groups* is ``True`` the data-vector name for every channel
+    in group *i* is suffixed with the matching time-vector label (e.g.
+    ``EngineSpeed_t1``), making the channel-to-time-axis association explicit
+    when the file is loaded in MATLAB.
+    """
     try:
         import scipy.io as sio  # type: ignore[import-untyped]
     except ImportError as exc:
@@ -217,11 +235,26 @@ def _do_mat(mdf: Any, output_path: str, job: _Job) -> None:
     import numpy as np
 
     mat_data: dict[str, Any] = {}
-    seen:     dict[str, int] = {}       # uniqueness counter for var names
+    seen:     dict[str, int] = {}   # uniqueness counter for _mat_var
 
+    # ── Phase 1: pre-register time-vector labels ─────────────────────────────
+    # Assign t1, t2, … to every group that has channel entries and reserve
+    # these names in `seen` so no channel variable can accidentally steal them.
+    group_time_label: dict[int, str] = {}  # group_index → actual MATLAB var name
+    t_counter = 1
+    for i, group in enumerate(mdf.groups):
+        if group.channels:
+            group_time_label[i] = _mat_var(f"t{t_counter}", seen)
+            t_counter += 1
+
+    # ── Phase 2: iterate groups, collect data and timestamps ─────────────────
     for i, group in enumerate(mdf.groups):
         if job.cancel_requested:
             return
+
+        time_label    = group_time_label.get(i)   # e.g. "t1", "t2", …
+        timestamps_arr: "Any | None" = None
+        found_numeric = False
 
         for ch in group.channels:
             name = str(ch.name or "")
@@ -234,9 +267,21 @@ def _do_mat(mdf: Any, output_path: str, job: _Job) -> None:
                 if not (hasattr(samples, "dtype")
                         and np.issubdtype(samples.dtype, np.number)):
                     continue
-                mat_data[_mat_var(name, seen)] = samples
+                if timestamps_arr is None and sig.timestamps is not None:
+                    timestamps_arr = sig.timestamps
+
+                if mat_link_groups and time_label:
+                    var_name = _mat_var(f"{name}_{time_label}", seen)
+                else:
+                    var_name = _mat_var(name, seen)
+                mat_data[var_name] = samples
+                found_numeric = True
             except Exception:  # noqa: BLE001
                 pass
+
+        # Export the timestamp vector only when there is numeric data for it
+        if found_numeric and timestamps_arr is not None and time_label:
+            mat_data[time_label] = timestamps_arr
 
         job.done = i + 1
 

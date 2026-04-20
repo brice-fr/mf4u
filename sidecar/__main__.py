@@ -253,7 +253,8 @@ def handle_start_export(req: dict) -> dict:
     fmt            = params.get("format", "")
     output_path    = params.get("output_path", "")
     db_assignments = params.get("db_assignments") or None  # None if absent/null/[]
-    flatten        = bool(params.get("flatten") or False)
+    flatten         = bool(params.get("flatten") or False)
+    mat_link_groups = bool(params.get("mat_link_groups") or False)
 
     if fmt not in ("mat", "tdms", "parquet", "csv", "tsv", "xlsx", "mf4"):
         return _err(req, 1001,
@@ -264,7 +265,8 @@ def handle_start_export(req: dict) -> dict:
     try:
         import export as exp
         job_id = exp.start(session["mdf"], fmt, output_path,
-                           db_assignments=db_assignments, flatten=flatten)
+                           db_assignments=db_assignments, flatten=flatten,
+                           mat_link_groups=mat_link_groups)
         return _ok(req, {"job_id": job_id})
     except Exception as exc:  # noqa: BLE001
         return _err(req, 1001, f"failed to start export: {exc}")

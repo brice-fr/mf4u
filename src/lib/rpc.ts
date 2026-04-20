@@ -124,6 +124,7 @@ export async function startExport(
   outputPath: string,
   dbAssignments?: DbAssignment[],
   flatten?: boolean,
+  matLinkGroups?: boolean,
 ): Promise<{ job_id: string }> {
   return invoke<{ job_id: string }>("start_export", {
     sessionId,
@@ -131,6 +132,7 @@ export async function startExport(
     outputPath,
     dbAssignments: dbAssignments && dbAssignments.length > 0 ? dbAssignments : null,
     flatten: flatten ?? false,
+    matLinkGroups: matLinkGroups ?? false,
   });
 }
 
