@@ -74,31 +74,39 @@
   }
 
   let previews     = $state(new Map<string, PreviewItem>());
-  let previewTimer = $state<ReturnType<typeof setTimeout> | null>(null);
+  // Plain let — NOT $state.  Reading $state inside $effect creates a reactive
+  // dependency; writing to it from within the same effect causes an infinite
+  // re-run loop.  A plain let is just a mutable slot with no reactivity.
+  let previewTimer: ReturnType<typeof setTimeout> | null = null;
 
   function previewKey(groupIndex: number, dbPath: string) {
     return `${groupIndex}::${dbPath}`;
   }
 
+  // Only dbAssignments is a reactive dependency here.
+  // previewTimer and previews are NOT read inside this effect, so they are
+  // never tracked — mutating them from runPreview() is safe.
   $effect(() => {
-    const assignments = dbAssignments;   // reactive dep
-    if (previewTimer) clearTimeout(previewTimer);
-    if (assignments.length === 0) return;
-
-    // Mark newly-seen entries as loading
-    const updated = new Map(previews);
-    for (const a of assignments) {
-      const key = previewKey(a.group_index, a.db_path);
-      if (!updated.has(key)) updated.set(key, { status: "loading" });
+    const assignments = dbAssignments;           // the only reactive dep
+    if (assignments.length === 0) {
+      clearTimeout(previewTimer ?? undefined);
+      return;
     }
-    previews = updated;
-
+    clearTimeout(previewTimer ?? undefined);
     const timer = setTimeout(() => runPreview(assignments), 400);
     previewTimer = timer;
-    return () => clearTimeout(timer);
+    return () => { clearTimeout(timer); };
   });
 
   async function runPreview(assignments: DbAssignment[]) {
+    // Mark newly-seen entries as loading (state mutation outside $effect — safe).
+    const loading = new Map(previews);
+    for (const a of assignments) {
+      const key = previewKey(a.group_index, a.db_path);
+      if (!loading.has(key)) loading.set(key, { status: "loading" });
+    }
+    previews = loading;
+
     try {
       const result = await previewBusDecoding(sessionId, assignments);
       const updated = new Map(previews);
@@ -118,7 +126,7 @@
       }
       previews = updated;
     } catch {
-      // Ignore transient preview errors
+      // Ignore transient preview errors — badge stays at "loading" until next change.
     }
   }
 
