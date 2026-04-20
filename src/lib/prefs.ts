@@ -15,7 +15,7 @@ export interface AppPrefs {
 }
 
 export const PREF_DEFAULTS: AppPrefs = {
-  matLinkGroups: false,
+  matLinkGroups: true,
 };
 
 export function loadPrefs(): AppPrefs {
