@@ -4,13 +4,14 @@
   import { Menu, Submenu, MenuItem, CheckMenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
   import { onMount } from "svelte";
   import { openFile, getStructure, closeSession } from "$lib/rpc";
-  import type { Metadata, GroupInfo, DbAssignment } from "$lib/rpc";
+  import type { Metadata, GroupInfo, DbAssignment, FilteredChannel } from "$lib/rpc";
   import { loadPrefs, savePrefs } from "$lib/prefs";
   import type { AppPrefs } from "$lib/prefs";
   import MetadataPanel from "$lib/components/MetadataPanel.svelte";
   import SignalTree from "$lib/components/SignalTree.svelte";
   import ExportDialog from "$lib/components/ExportDialog.svelte";
   import FrameDecodingDialog from "$lib/components/FrameDecodingDialog.svelte";
+  import ChannelFilterDialog from "$lib/components/ChannelFilterDialog.svelte";
   import PreferencesDialog from "$lib/components/PreferencesDialog.svelte";
   import AboutDialog from "$lib/components/AboutDialog.svelte";
   import Toolbar from "$lib/components/Toolbar.svelte";
@@ -23,17 +24,22 @@
   let groups: GroupInfo[]       = $state([]);
   let sessionId: string | null  = $state(null);
   let dragging: boolean         = $state(false);
-  let showExport:       boolean  = $state(false);
-  let showAbout:        boolean  = $state(false);
-  let showFrameDecoding: boolean = $state(false);
-  let showPreferences:  boolean  = $state(false);
-  let flatten:          boolean  = $state(false);
+  let showExport:        boolean  = $state(false);
+  let showAbout:         boolean  = $state(false);
+  let showFrameDecoding: boolean  = $state(false);
+  let showChannelFilter: boolean  = $state(false);
+  let showPreferences:   boolean  = $state(false);
+  let flatten:           boolean  = $state(false);
 
   // ── App-wide preferences (persisted in localStorage) ──────────────────── //
   let prefs: AppPrefs = $state(loadPrefs());
 
   // ── Phase A: frame decoding session config ─────────────────────────────── //
   let decodingConfig: DbAssignment[] = $state([]);
+
+  // ── Phase B: channel filter session config ─────────────────────────────── //
+  /** null = no filter (export everything); array = explicit inclusion list. */
+  let selectedSignals: FilteredChannel[] | null = $state(null);
 
   // ── signal tree controls (driven from status bar) ─────────────────────── //
   let showEmptyGroups: boolean              = $state(false);
@@ -54,17 +60,26 @@
   const decodingActive      = $derived(decodingConfig.length > 0);
   const uniqueDecodingDbs   = $derived(new Set(decodingConfig.map(a => a.db_path)));
 
+  // Phase B derived
+  const totalPhysicalSignals = $derived(
+    groups.filter(g => !g.is_bus_raw).reduce((n, g) => n + g.channels.length, 0)
+  );
+  const filterActive  = $derived(selectedSignals !== null);
+  const filterCount   = $derived.by(() => selectedSignals !== null ? selectedSignals.length : 0);
+
   // Keep native menu items in sync with reactive state
   $effect(() => { exportMenuItem?.setEnabled(phase === "loaded" && !!sessionId); });
   $effect(() => { frameDecodingMenuItem?.setEnabled(hasRawFrameGroups); });
+  $effect(() => { channelFilterMenuItem?.setEnabled(phase === "loaded" && !!sessionId); });
   $effect(() => { flattenCheckItem?.setChecked(flatten); });
   $effect(() => { flattenCheckItem?.setEnabled(phase === "loaded" && !!sessionId); });
 
   // Native menu items we need to update at runtime
-  let exportMenuItem:        Awaited<ReturnType<typeof MenuItem.new>>       | null = null;
-  let frameDecodingMenuItem: Awaited<ReturnType<typeof MenuItem.new>>       | null = null;
-  let flattenCheckItem:      Awaited<ReturnType<typeof CheckMenuItem.new>>  | null = null;
-  let preferencesMenuItem:   Awaited<ReturnType<typeof MenuItem.new>>       | null = null;
+  let exportMenuItem:         Awaited<ReturnType<typeof MenuItem.new>>      | null = null;
+  let frameDecodingMenuItem:  Awaited<ReturnType<typeof MenuItem.new>>      | null = null;
+  let channelFilterMenuItem:  Awaited<ReturnType<typeof MenuItem.new>>      | null = null;
+  let flattenCheckItem:       Awaited<ReturnType<typeof CheckMenuItem.new>> | null = null;
+  let preferencesMenuItem:    Awaited<ReturnType<typeof MenuItem.new>>      | null = null;
 
   // ── window title ──────────────────────────────────────────────────────── //
   const APP_TITLE = "mf4 utility";
@@ -84,8 +99,9 @@
     errorMsg       = "";
     metadata       = null;
     groups         = [];
-    decodingConfig = [];   // reset Phase A config on new file open
-    flatten        = false; // reset flatten on new file open
+    decodingConfig  = [];   // reset Phase A config on new file open
+    selectedSignals = null; // reset Phase B filter on new file open
+    flatten         = false; // reset flatten on new file open
     try {
       const result  = await openFile(path);
       sessionId = result.session_id;
@@ -151,6 +167,13 @@
         action: () => { if (sessionId) showFrameDecoding = true; },
       });
 
+      channelFilterMenuItem = await MenuItem.new({
+        id: "channel_filter",
+        text: "Configure channel filter…",
+        enabled: false,
+        action: () => { if (sessionId) showChannelFilter = true; },
+      });
+
       flattenCheckItem = await CheckMenuItem.new({
         id: "flatten",
         text: "Flatten output",
@@ -206,6 +229,7 @@
             text: "Export",
             items: [
               frameDecodingMenuItem,
+              channelFilterMenuItem,
               flattenCheckItem,
               await PredefinedMenuItem.new({ item: "Separator" }),
               exportMenuItem,
@@ -250,6 +274,8 @@
       dbAssignments={decodingConfig}
       {flatten}
       matLinkGroups={prefs.matLinkGroups}
+      signalFilter={selectedSignals}
+      totalSignals={totalPhysicalSignals}
       onclose={() => (showExport = false)}
     />
   {/if}
@@ -259,8 +285,19 @@
       {groups}
       {sessionId}
       dbAssignments={decodingConfig}
-      onchange={(cfg) => (decodingConfig = cfg)}
+      onchange={(cfg) => { decodingConfig = cfg; selectedSignals = null; }}
       onclose={() => (showFrameDecoding = false)}
+    />
+  {/if}
+
+  {#if showChannelFilter && sessionId}
+    <ChannelFilterDialog
+      {groups}
+      {sessionId}
+      dbAssignments={decodingConfig}
+      selectedSignals={selectedSignals}
+      onchange={(sigs) => { selectedSignals = sigs; }}
+      onclose={() => (showChannelFilter = false)}
     />
   {/if}
 
@@ -271,10 +308,13 @@
     hasRawFrameGroups={hasRawFrameGroups}
     decodingActive={decodingActive}
     decodingDbCount={uniqueDecodingDbs.size}
+    {filterActive}
+    {filterCount}
     {flatten}
     onopen={pickFile}
     onexport={() => { if (sessionId) showExport = true; }}
     onframedecoding={() => { if (sessionId) showFrameDecoding = true; }}
+    onchannelfilter={() => { if (sessionId) showChannelFilter = true; }}
     onflattentoggle={() => { flatten = !flatten; }}
     onpreferences={() => { showPreferences = true; }}
   />

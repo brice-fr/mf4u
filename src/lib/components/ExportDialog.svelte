@@ -1,22 +1,26 @@
 <script lang="ts">
   import { save as saveDialog } from "@tauri-apps/plugin-dialog";
   import { startExport, getExportProgress, cancelExport } from "$lib/rpc";
-  import type { ExportJob, DbAssignment } from "$lib/rpc";
+  import type { ExportJob, DbAssignment, FilteredChannel } from "$lib/rpc";
 
   let {
     sessionId,
-    fileName       = "",
-    dbAssignments  = [],
-    flatten        = false,
-    matLinkGroups  = false,
+    fileName        = "",
+    dbAssignments   = [],
+    flatten         = false,
+    matLinkGroups   = false,
+    signalFilter    = null,
+    totalSignals    = 0,
     onclose,
   }: {
-    sessionId:      string;
-    fileName?:      string;
-    dbAssignments?: DbAssignment[];
-    flatten?:       boolean;
-    matLinkGroups?: boolean;
-    onclose:        () => void;
+    sessionId:       string;
+    fileName?:       string;
+    dbAssignments?:  DbAssignment[];
+    flatten?:        boolean;
+    matLinkGroups?:  boolean;
+    signalFilter?:   FilteredChannel[] | null;
+    totalSignals?:   number;
+    onclose:         () => void;
   } = $props();
 
   /** Strip any extension from the source file name to use as the export stem. */
@@ -72,7 +76,8 @@
   const uniqueDecodingDbs    = $derived(new Set(dbAssignments.map(a => a.db_path)));
   const decodingGroupCount   = $derived(new Set(dbAssignments.map(a => a.group_index)).size);
   const effectiveMatLink     = $derived(matLinkGroups && FMT_META[format].supportsTimeLink && !effectiveFlatten);
-  const hasActiveSettings    = $derived(dbAssignments.length > 0 || effectiveFlatten || effectiveMatLink);
+  const hasSignalFilter      = $derived(signalFilter !== null && signalFilter !== undefined);
+  const hasActiveSettings    = $derived(dbAssignments.length > 0 || effectiveFlatten || effectiveMatLink || hasSignalFilter);
 
   async function runExport() {
     if (!outputPath || jobId) return;
@@ -82,6 +87,7 @@
         dbAssignments.length > 0 ? dbAssignments : undefined,
         effectiveFlatten,
         effectiveMatLink,
+        signalFilter,
       );
       jobId = r.job_id;
       job   = { status: "running", done: 0, total: 0, error: null };
@@ -212,6 +218,12 @@
             <div class="strip-row">
               <span class="strip-key">Frame decoding</span>
               <span class="strip-val">{decodingGroupCount} group{decodingGroupCount !== 1 ? "s" : ""} · {uniqueDecodingDbs.size} DB file{uniqueDecodingDbs.size !== 1 ? "s" : ""}</span>
+            </div>
+          {/if}
+          {#if hasSignalFilter}
+            <div class="strip-row">
+              <span class="strip-key">Channel filter</span>
+              <span class="strip-val">{signalFilter!.length} / {totalSignals} signals</span>
             </div>
           {/if}
           {#if effectiveFlatten}

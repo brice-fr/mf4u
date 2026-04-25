@@ -5,10 +5,13 @@
     hasRawFrameGroups = false,
     decodingActive    = false,
     decodingDbCount   = 0,
+    filterActive      = false,
+    filterCount       = 0,
     flatten           = false,
     onopen            = () => {},
     onexport          = () => {},
     onframedecoding   = () => {},
+    onchannelfilter   = () => {},
     onflattentoggle   = () => {},
     onpreferences     = () => {},
   }: {
@@ -17,10 +20,13 @@
     hasRawFrameGroups?: boolean;
     decodingActive?:    boolean;
     decodingDbCount?:   number;
+    filterActive?:      boolean;
+    filterCount?:       number;
     flatten?:           boolean;
     onopen?:            () => void;
     onexport?:          () => void;
     onframedecoding?:   () => void;
+    onchannelfilter?:   () => void;
     onflattentoggle?:   () => void;
     onpreferences?:     () => void;
   } = $props();
@@ -75,6 +81,28 @@
     </button>
     {#if decodingActive && decodingDbCount > 0}
       <span class="active-badge">{decodingDbCount} DB</span>
+    {/if}
+  </div>
+
+  <!-- Channel filter -->
+  <div class="icon-btn-wrap">
+    <button
+      class="icon-btn"
+      class:active={filterActive}
+      onclick={onchannelfilter}
+      disabled={!hasFile}
+      title="Configure channel filter…"
+      aria-label="Configure channel filter"
+    >
+      <!-- Funnel / filter icon -->
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+           fill="none" stroke="currentColor" stroke-width="1.8"
+           stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
+      </svg>
+    </button>
+    {#if filterActive}
+      <span class="active-badge">{filterCount}</span>
     {/if}
   </div>
 

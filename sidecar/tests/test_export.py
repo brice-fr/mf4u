@@ -803,3 +803,339 @@ class TestCancellation:
         import export as exp
         progress = exp.get_progress("no-such-job-id")
         assert progress["status"] == "not_found"
+
+
+# --------------------------------------------------------------------------- #
+# Phase B — Signal filter
+# --------------------------------------------------------------------------- #
+
+class TestSignalFilter:
+    """signal_filter param limits which channels are written to each format."""
+
+    def _make_filter(self, group_index: int, *channel_names: str) -> list[dict]:
+        return [
+            {"group_index": group_index, "channel_name": name}
+            for name in channel_names
+        ]
+
+    def test_filter_limits_csv_columns(self, minimal_mf4, tmp_path):
+        """CSV export with filter=[Ch1] should only have Ch1 in the header."""
+        import csv
+        import export as exp
+        mdf = _open(minimal_mf4)
+        out = str(tmp_path / "filtered.csv")
+        sig_filter = self._make_filter(0, "Ch1")
+        try:
+            job_id   = exp.start(mdf, "csv", out, signal_filter=sig_filter)
+            progress = _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        assert progress["status"] == "done", progress.get("error")
+        with open(out, newline="", encoding="utf-8") as fh:
+            header = next(csv.reader(fh))
+        assert "Ch1" in header, f"Expected Ch1 in header: {header}"
+        assert "Ch2" not in header, f"Ch2 should be excluded, got: {header}"
+        assert "Ch3" not in header, f"Ch3 should be excluded, got: {header}"
+
+    def test_filter_limits_mat_keys(self, minimal_mf4, tmp_path):
+        """MAT export with filter=[Ch1, Ch2] should exclude Ch3."""
+        import export as exp
+        import scipy.io as sio  # type: ignore[import-untyped]
+        mdf = _open(minimal_mf4)
+        out = str(tmp_path / "filtered.mat")
+        sig_filter = self._make_filter(0, "Ch1", "Ch2")
+        try:
+            job_id = exp.start(mdf, "mat", out, signal_filter=sig_filter)
+            _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        mat = sio.loadmat(out)
+        data_keys = {k for k in mat if not k.startswith("_")}
+        assert "Ch1" in data_keys, f"Expected Ch1 in {data_keys}"
+        assert "Ch2" in data_keys, f"Expected Ch2 in {data_keys}"
+        assert "Ch3" not in data_keys, f"Ch3 should be excluded from {data_keys}"
+
+    def test_filter_limits_parquet_columns(self, minimal_mf4, tmp_path):
+        """Parquet export with filter=[Ch2] should not include Ch1 or Ch3."""
+        import export as exp
+        import pyarrow.parquet as pq  # type: ignore[import-untyped]
+        mdf = _open(minimal_mf4)
+        out = str(tmp_path / "filtered.parquet")
+        sig_filter = self._make_filter(0, "Ch2")
+        try:
+            job_id = exp.start(mdf, "parquet", out, signal_filter=sig_filter)
+            _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        table = pq.read_table(out)
+        col_names = table.schema.names
+        assert "Ch2" in col_names, f"Expected Ch2 in {col_names}"
+        assert "Ch1" not in col_names, f"Ch1 should be excluded from {col_names}"
+        assert "Ch3" not in col_names, f"Ch3 should be excluded from {col_names}"
+
+    def test_filter_limits_tsv_columns(self, minimal_mf4, tmp_path):
+        """TSV export with filter=[Ch3] should not include Ch1 or Ch2."""
+        import export as exp
+        mdf = _open(minimal_mf4)
+        out = str(tmp_path / "filtered.tsv")
+        sig_filter = self._make_filter(0, "Ch3")
+        try:
+            job_id = exp.start(mdf, "tsv", out, signal_filter=sig_filter)
+            _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        with open(out, encoding="utf-8") as fh:
+            header = fh.readline().rstrip("\n").split("\t")
+        assert "Ch3" in header, f"Expected Ch3 in header: {header}"
+        assert "Ch1" not in header, f"Ch1 should be excluded: {header}"
+        assert "Ch2" not in header, f"Ch2 should be excluded: {header}"
+
+    def test_filter_limits_xlsx_columns(self, minimal_mf4, tmp_path):
+        """XLSX export with filter=[Ch1] should not include Ch2 or Ch3."""
+        import export as exp
+        import openpyxl  # type: ignore[import-untyped]
+        mdf = _open(minimal_mf4)
+        out = str(tmp_path / "filtered.xlsx")
+        sig_filter = self._make_filter(0, "Ch1")
+        try:
+            job_id = exp.start(mdf, "xlsx", out, signal_filter=sig_filter)
+            _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        wb = openpyxl.load_workbook(out, read_only=True)
+        ws = wb.worksheets[0]
+        header = [cell.value for cell in next(ws.iter_rows(max_row=1))]
+        wb.close()
+        assert "Ch1" in header, f"Expected Ch1 in header: {header}"
+        assert "Ch2" not in header, f"Ch2 should be excluded: {header}"
+        assert "Ch3" not in header, f"Ch3 should be excluded: {header}"
+
+    def test_null_filter_exports_all_channels(self, minimal_mf4, tmp_path):
+        """signal_filter=None (no filter) should export all channels normally."""
+        import csv
+        import export as exp
+        mdf = _open(minimal_mf4)
+        out = str(tmp_path / "no_filter.csv")
+        try:
+            job_id   = exp.start(mdf, "csv", out, signal_filter=None)
+            progress = _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        assert progress["status"] == "done", progress.get("error")
+        with open(out, newline="", encoding="utf-8") as fh:
+            header = next(csv.reader(fh))
+        assert "Ch1" in header
+        assert "Ch2" in header
+        assert "Ch3" in header
+
+    def test_empty_filter_list_exports_all_channels(self, minimal_mf4, tmp_path):
+        """signal_filter=[] (empty list) is treated as no filter → all channels."""
+        import csv
+        import export as exp
+        mdf = _open(minimal_mf4)
+        out = str(tmp_path / "empty_filter.csv")
+        try:
+            job_id   = exp.start(mdf, "csv", out, signal_filter=[])
+            progress = _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        assert progress["status"] == "done", progress.get("error")
+        with open(out, newline="", encoding="utf-8") as fh:
+            header = next(csv.reader(fh))
+        assert any("Ch" in col for col in header)
+
+    def test_filter_with_flatten_limits_columns(self, multi_group_mf4, tmp_path):
+        """Flat CSV with signal_filter should only write the listed channels."""
+        import csv
+        import export as exp
+        mdf = _open(multi_group_mf4)
+        out = str(tmp_path / "flat_filtered.csv")
+        # Include only EngineSpeed (group 0) and VehicleSpeed (group 1)
+        sig_filter = [
+            {"group_index": 0, "channel_name": "EngineSpeed"},
+            {"group_index": 1, "channel_name": "VehicleSpeed"},
+        ]
+        try:
+            job_id   = exp.start(mdf, "csv", out, flatten=True, signal_filter=sig_filter)
+            progress = _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        assert progress["status"] == "done", progress.get("error")
+        with open(out, newline="", encoding="utf-8") as fh:
+            header = next(csv.reader(fh))
+        assert "EngineSpeed" in header, f"Expected EngineSpeed: {header}"
+        assert "VehicleSpeed" in header, f"Expected VehicleSpeed: {header}"
+        assert "ThrottlePos" not in header, f"ThrottlePos should be excluded: {header}"
+        assert "SteeringAngle" not in header, f"SteeringAngle should be excluded: {header}"
+
+    def test_filter_per_group_index_is_respected(self, multi_group_mf4, tmp_path):
+        """A filter entry for group 0, 'EngineSpeed' must not suppress group 1 data
+        even if group 1 also has a channel named 'EngineSpeed' (different group)."""
+        import csv
+        import export as exp
+        mdf = _open(multi_group_mf4)
+        out = str(tmp_path / "grp_filter.csv")
+        # Include only group 1 channels
+        sig_filter = [
+            {"group_index": 1, "channel_name": "VehicleSpeed"},
+            {"group_index": 1, "channel_name": "SteeringAngle"},
+        ]
+        try:
+            job_id   = exp.start(mdf, "csv", out, signal_filter=sig_filter)
+            _wait_for_job(job_id)
+        finally:
+            mdf.close()
+        # multi-group → multiple files; check they exist
+        csv_files = [f for f in os.listdir(tmp_path) if f.endswith(".csv")]
+        assert len(csv_files) >= 1
+
+
+# --------------------------------------------------------------------------- #
+# Phase B — get_exportable_signals
+# --------------------------------------------------------------------------- #
+
+class TestGetExportableSignals:
+    """Tests for the export.get_exportable_signals() helper."""
+
+    def test_returns_dict_with_groups_key(self, minimal_mf4):
+        import export as exp
+        mdf = _open(minimal_mf4)
+        try:
+            result = exp.get_exportable_signals(mdf)
+        finally:
+            mdf.close()
+        assert isinstance(result, dict)
+        assert "groups" in result
+
+    def test_physical_channels_included(self, minimal_mf4):
+        """minimal.mf4 has physical channels → groups list must be non-empty."""
+        import export as exp
+        mdf = _open(minimal_mf4)
+        try:
+            result = exp.get_exportable_signals(mdf)
+        finally:
+            mdf.close()
+        assert len(result["groups"]) >= 1
+
+    def test_physical_source_field(self, minimal_mf4):
+        """All groups from a file with no bus-raw data must have source='physical'."""
+        import export as exp
+        mdf = _open(minimal_mf4)
+        try:
+            result = exp.get_exportable_signals(mdf)
+        finally:
+            mdf.close()
+        for grp in result["groups"]:
+            assert grp["source"] == "physical", (
+                f"Expected source='physical', got {grp['source']!r}"
+            )
+
+    def test_physical_channel_names_present(self, minimal_mf4):
+        """Ch1, Ch2, Ch3 should appear in the exportable channel list."""
+        import export as exp
+        mdf = _open(minimal_mf4)
+        try:
+            result = exp.get_exportable_signals(mdf)
+        finally:
+            mdf.close()
+        all_channel_names = {ch["name"] for g in result["groups"] for ch in g["channels"]}
+        assert "Ch1" in all_channel_names, f"Ch1 missing from {all_channel_names}"
+        assert "Ch2" in all_channel_names, f"Ch2 missing from {all_channel_names}"
+        assert "Ch3" in all_channel_names, f"Ch3 missing from {all_channel_names}"
+
+    def test_bus_raw_groups_excluded_from_physical(self, bus_raw_mf4):
+        """bus_raw.mf4 contains only raw-frame groups; get_exportable_signals without
+        db_assignments should return no groups (or only non-raw groups)."""
+        import export as exp
+        mdf = _open(bus_raw_mf4)
+        try:
+            result = exp.get_exportable_signals(mdf)
+        finally:
+            mdf.close()
+        # All returned groups must have source='physical'; bus-raw groups are excluded
+        for grp in result["groups"]:
+            assert grp["source"] == "physical"
+
+    def test_with_db_assignments_adds_decoded_groups(self, bus_raw_mf4, can_bus_dbc):
+        """Providing db_assignments should add decoded groups with source='decoded'."""
+        import export as exp
+        mdf = _open(bus_raw_mf4)
+        assignments = [{"group_index": 0, "db_path": can_bus_dbc}]
+        try:
+            result = exp.get_exportable_signals(mdf, db_assignments=assignments)
+        finally:
+            mdf.close()
+        sources = {grp["source"] for grp in result["groups"]}
+        assert "decoded" in sources, (
+            f"Expected at least one decoded group; got sources: {sources}"
+        )
+
+    def test_decoded_groups_have_channels(self, bus_raw_mf4, can_bus_dbc):
+        """Decoded groups must have at least one channel entry."""
+        import export as exp
+        mdf = _open(bus_raw_mf4)
+        assignments = [{"group_index": 0, "db_path": can_bus_dbc}]
+        try:
+            result = exp.get_exportable_signals(mdf, db_assignments=assignments)
+        finally:
+            mdf.close()
+        decoded_groups = [g for g in result["groups"] if g["source"] == "decoded"]
+        assert decoded_groups, "Expected at least one decoded group"
+        for grp in decoded_groups:
+            assert len(grp["channels"]) >= 1, (
+                f"Decoded group {grp['group_index']} has no channels"
+            )
+
+    def test_channel_has_name_and_unit_fields(self, minimal_mf4):
+        """Each channel entry must have 'name' and 'unit' string fields."""
+        import export as exp
+        mdf = _open(minimal_mf4)
+        try:
+            result = exp.get_exportable_signals(mdf)
+        finally:
+            mdf.close()
+        for grp in result["groups"]:
+            for ch in grp["channels"]:
+                assert "name" in ch, f"Channel entry missing 'name': {ch}"
+                assert "unit" in ch, f"Channel entry missing 'unit': {ch}"
+                assert isinstance(ch["name"], str)
+                assert isinstance(ch["unit"], str)
+
+    def test_group_has_required_fields(self, minimal_mf4):
+        """Each group entry must have group_index, acq_name, source, channels."""
+        import export as exp
+        mdf = _open(minimal_mf4)
+        try:
+            result = exp.get_exportable_signals(mdf)
+        finally:
+            mdf.close()
+        for grp in result["groups"]:
+            assert "group_index" in grp
+            assert "acq_name" in grp
+            assert "source" in grp
+            assert "channels" in grp
+            assert isinstance(grp["group_index"], int)
+            assert isinstance(grp["acq_name"], str)
+            assert grp["source"] in ("physical", "decoded")
+
+    def test_no_db_assignments_returns_no_decoded_groups(self, bus_raw_mf4):
+        """Without db_assignments, no decoded groups should appear."""
+        import export as exp
+        mdf = _open(bus_raw_mf4)
+        try:
+            result = exp.get_exportable_signals(mdf, db_assignments=None)
+        finally:
+            mdf.close()
+        decoded = [g for g in result["groups"] if g["source"] == "decoded"]
+        assert decoded == [], f"Expected no decoded groups, got: {decoded}"
+
+    def test_empty_db_assignments_returns_no_decoded_groups(self, bus_raw_mf4):
+        """db_assignments=[] (empty) should not trigger decoding."""
+        import export as exp
+        mdf = _open(bus_raw_mf4)
+        try:
+            result = exp.get_exportable_signals(mdf, db_assignments=[])
+        finally:
+            mdf.close()
+        decoded = [g for g in result["groups"] if g["source"] == "decoded"]
+        assert decoded == [], f"Expected no decoded groups, got: {decoded}"

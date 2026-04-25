@@ -230,17 +230,41 @@ jobs:
           releaseBody: |
             ## mf4u v__VERSION__
 
-            ### macOS
-            | Download | Runs on |
+            ### Downloads
+            #### macOS
+            | File | Runs on |
             |---|---|
             | `mf4u___VERSION___aarch64.dmg` | Apple Silicon (M-series) |
             | `mf4u___VERSION___x64.dmg` | Intel Mac |
             | `mf4u___VERSION___universal.dmg` | Both — single binary for any Mac |
 
-            ### Windows
-            | Download | Notes |
+            #### Windows
+            | File | Notes |
             |---|---|
             | `mf4u___VERSION___x64-setup.exe` | NSIS installer, x86-64 |
+
+            ---
+
+            ### What's new in v0.2.0
+
+            #### Frame decoding
+            Load `.dbc` or `.arxml` bus description databases and assign them to raw-frame channel groups. A live preview shows matched message and signal counts. On export, `asammdf.extract_bus_logging` decodes raw frames into named physical signals. The decoded groups in re-exported MF4 files no longer carry the `BUS_EVENT` flag, so downstream tools classify them correctly as physical signal groups.
+
+            #### Channel filter
+            A dual-panel signal picker lets you select exactly which channels to include in the export. The available list shows all physical signals in the file plus any decoded signals produced by the configured frame decoding. The active filter is shown as a badge on the toolbar and applied transparently to all export formats.
+
+            #### Flatten output
+            Merges all channel groups into a single timestamp-union table for MAT, Parquet, CSV, TSV, and XLSX exports. Cells where a channel has no record at a given timestamp are filled with `NaN` / empty.
+
+            #### MF4 re-export
+            Export back to `.mf4` with frame decoding and/or channel filtering applied while preserving the original HD metadata (author, timestamps, comment, etc.).
+
+            #### Preferences dialog
+            Configures MATLAB time-group linking (on by default): appends `_t1`, `_t2`, … suffixes to channel variable names so each channel's time-axis membership is explicit in MATLAB.
+
+            #### Metadata panel enhancements
+            - **Finalized** — reads the on-disk identification block directly; shows a plain `Yes` for finalized files and an amber `⚠ no` badge with a tooltip listing pending finalization tasks for unfinalized files.
+            - **Sorted** — detects interleaved recording groups via `record_id_len`; same badge pattern as Finalized.
           releaseDraft: true
           prerelease:  false
           args: >-

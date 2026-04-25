@@ -47,6 +47,13 @@ def extract(mdf_obj: Any, file_path: str) -> dict[str, Any]:
     """Return a flat metadata dict for *mdf_obj* (an open asammdf.MDF instance)."""
     groups = mdf_obj.groups
 
+    # ── finalization state ────────────────────────────────────────────────── #
+    # Read the raw identification block from the ORIGINAL file on disk.
+    # asammdf never modifies the original file; unfinalized files are copied to
+    # a temp location before in-memory finalization, so this read is always safe
+    # and reflects the true on-disk state.
+    is_finalized, unfinalized_flags = _read_finalization(file_path)
+
     # ── timing ──────────────────────────────────────────────────────────── #
     start_dt = mdf_obj.start_time          # datetime | None
     start_iso = start_dt.isoformat() if start_dt else None
@@ -65,6 +72,16 @@ def extract(mdf_obj: Any, file_path: str) -> dict[str, Any]:
     if mdf_obj.header and mdf_obj.header.comment:
         raw_comment = str(mdf_obj.header.comment).strip()
     hd = _parse_hd_comment(raw_comment)
+
+    # ── sort state ───────────────────────────────────────────────────────── #
+    # record_id_len == 0 means sorted (one CG per DG, records contiguous).
+    # Non-zero (1, 2, 4, 8 bytes) means unsorted / interleaved.
+    # asammdf's _sort() reads this field but never resets it, so it always
+    # reflects the true on-disk value even after the in-memory sort runs.
+    is_sorted = all(
+        getattr(getattr(g, "data_group", None), "record_id_len", 0) == 0
+        for g in groups
+    )
 
     # ── per-DG compression state ─────────────────────────────────────────── #
     dg_compression = [_group_compression_state(mdf_obj, g) for g in groups]
@@ -87,12 +104,15 @@ def extract(mdf_obj: Any, file_path: str) -> dict[str, Any]:
         "file_name":        os.path.basename(file_path),
         "file_size":        os.path.getsize(file_path),
         "version":          mdf_obj.version,
+        "is_finalized":     is_finalized,
+        "unfinalized_flags": unfinalized_flags,
         "start_time":       start_iso,
         "end_time":         end_iso,
         "duration_s":       duration_s,
         "num_channel_groups":         num_cg,
         "num_nonempty_channel_groups": num_cg_nonempty,
         "num_channels":               num_ch,
+        "is_sorted":          is_sorted,
         "has_bus_frames":     has_bus,
         "bus_types":          bus_types,
         "bus_frame_counts":   bus_frame_counts,  # {type: group_count}
@@ -109,6 +129,67 @@ def extract(mdf_obj: Any, file_path: str) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # Internal helpers
 # --------------------------------------------------------------------------- #
+
+def _read_finalization(file_path: str) -> tuple[bool, int]:
+    """Read the MDF identification block directly from *file_path* and return
+    ``(is_finalized, unfinalized_standard_flags)``.
+
+    The identification block is the first 64 bytes of every MDF file (same
+    layout for MDF 2, 3 and 4):
+
+      • bytes  0– 7: ``file_identification``
+                       Finalized  → bytes that .strip() to b"MDF"
+                       Unfinalized → bytes that .strip() to b"UnFinMF"
+                     Real-world tools use various trailing-pad characters (spaces,
+                     nulls, tabs), so we always compare the stripped form.
+      • bytes  8–15: ``version_str`` (e.g. b"4.10    " or b"3.30    ")
+      • bytes 60–61: ``unfinalized_standard_flags`` (uint16 LE)
+                     Only meaningful for MDF 4.x — in MDF 2/3 these bytes
+                     may hold unrelated data and must be ignored.
+
+    Rule:
+      A file is *unfinalized* when at least one of the following holds:
+        1. ``file_identification.strip() == b"UnFinMF"``   (explicit marker)
+        2. The file is MDF 4.x AND ``unfinalized_standard_flags != 0``
+
+    asammdf **never** modifies the original file; when it opens an unfinalized
+    MDF 4.10+ file it copies it to a temp directory and finalises only the copy.
+    Reading from *file_path* therefore always reflects the true on-disk state.
+
+    On any read error or truncated file returns ``(True, 0)`` — treat unknown
+    as finalized so the UI stays clean.
+    """
+    try:
+        with open(file_path, "rb") as fh:
+            raw = fh.read(64)
+        if len(raw) < 64:
+            return True, 0
+
+        file_id     = raw[:8]
+        version_str = raw[8:16]
+        unfin_flags = int.from_bytes(raw[60:62], "little")
+
+        # Strip trailing whitespace chars (space, tab, CR, LF …) to normalise
+        # across the many padding styles used by different logger tools.
+        # Note: bytes.strip() does NOT remove null bytes, so tools that use
+        # null-padding are handled correctly as long as asammdf accepts them
+        # (asammdf applies the same strip() check and rejects null-padded files).
+        file_id_stripped = file_id.strip()
+
+        # Rule 1: explicitly marked unfinalized
+        if file_id_stripped == b"UnFinMF":
+            return False, unfin_flags
+
+        # Rule 2: MDF 4.x with pending work items
+        is_mdf4 = version_str.startswith(b"4")
+        if is_mdf4 and unfin_flags != 0:
+            return False, unfin_flags
+
+        return True, 0
+
+    except OSError:
+        return True, 0
+
 
 def _parse_hd_comment(raw: str) -> dict[str, str]:
     """

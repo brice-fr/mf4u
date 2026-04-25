@@ -244,17 +244,35 @@ def handle_preview_bus_decoding(req: dict) -> dict:
         return _err(req, 1003, f"preview error: {exc}")
 
 
-def handle_start_export(req: dict) -> dict:
+def handle_get_exportable_signals(req: dict) -> dict:
+    """Return all exportable channels (physical + optionally decoded) for a session."""
     session, err = _session(req)
     if err:
         return err
 
     params         = req.get("params", {})
-    fmt            = params.get("format", "")
-    output_path    = params.get("output_path", "")
-    db_assignments = params.get("db_assignments") or None  # None if absent/null/[]
+    db_assignments = params.get("db_assignments") or None
+
+    try:
+        import export as exp
+        result = exp.get_exportable_signals(session["mdf"], db_assignments)
+        return _ok(req, result)
+    except Exception as exc:  # noqa: BLE001
+        return _err(req, 1003, f"get_exportable_signals error: {exc}")
+
+
+def handle_start_export(req: dict) -> dict:
+    session, err = _session(req)
+    if err:
+        return err
+
+    params          = req.get("params", {})
+    fmt             = params.get("format", "")
+    output_path     = params.get("output_path", "")
+    db_assignments  = params.get("db_assignments") or None  # None if absent/null/[]
     flatten         = bool(params.get("flatten") or False)
     mat_link_groups = bool(params.get("mat_link_groups") or False)
+    signal_filter   = params.get("signal_filter") or None   # None if absent/null/[]
 
     if fmt not in ("mat", "tdms", "parquet", "csv", "tsv", "xlsx", "mf4"):
         return _err(req, 1001,
@@ -266,7 +284,8 @@ def handle_start_export(req: dict) -> dict:
         import export as exp
         job_id = exp.start(session["mdf"], fmt, output_path,
                            db_assignments=db_assignments, flatten=flatten,
-                           mat_link_groups=mat_link_groups)
+                           mat_link_groups=mat_link_groups,
+                           signal_filter=signal_filter)
         return _ok(req, {"job_id": job_id})
     except Exception as exc:  # noqa: BLE001
         return _err(req, 1001, f"failed to start export: {exc}")
@@ -296,16 +315,17 @@ def handle_cancel_export(req: dict) -> dict:
 
 
 HANDLERS: dict[str, Any] = {
-    "ping":                   handle_ping,
-    "open_file":              handle_open_file,
-    "get_structure":          handle_get_structure,
-    "get_signal_stats":       handle_get_signal_stats,
-    "close_session":          handle_close_session,
-    "start_export":           handle_start_export,
-    "get_export_progress":    handle_get_export_progress,
-    "cancel_export":          handle_cancel_export,
-    "preview_bus_decoding":   handle_preview_bus_decoding,
-    "debug_bus_detection":    handle_debug_bus_detection,
+    "ping":                      handle_ping,
+    "open_file":                 handle_open_file,
+    "get_structure":             handle_get_structure,
+    "get_signal_stats":          handle_get_signal_stats,
+    "close_session":             handle_close_session,
+    "start_export":              handle_start_export,
+    "get_export_progress":       handle_get_export_progress,
+    "cancel_export":             handle_cancel_export,
+    "preview_bus_decoding":      handle_preview_bus_decoding,
+    "get_exportable_signals":    handle_get_exportable_signals,
+    "debug_bus_detection":       handle_debug_bus_detection,
 }
 
 

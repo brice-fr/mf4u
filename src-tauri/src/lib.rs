@@ -115,6 +115,7 @@ async fn start_export(
     db_assignments: Option<Value>,
     flatten: Option<bool>,
     mat_link_groups: Option<bool>,
+    signal_filter: Option<Value>,
     sidecar: tauri::State<'_, Mutex<Sidecar>>,
 ) -> Result<Value, String> {
     rpc_call(
@@ -127,6 +128,24 @@ async fn start_export(
             "db_assignments":  db_assignments,
             "flatten":         flatten.unwrap_or(false),
             "mat_link_groups": mat_link_groups.unwrap_or(false),
+            "signal_filter":   signal_filter,
+        }),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn get_exportable_signals(
+    session_id: String,
+    db_assignments: Option<Value>,
+    sidecar: tauri::State<'_, Mutex<Sidecar>>,
+) -> Result<Value, String> {
+    rpc_call(
+        &sidecar,
+        "get_exportable_signals",
+        json!({
+            "session_id":     session_id,
+            "db_assignments": db_assignments,
         }),
     )
     .await
@@ -193,6 +212,7 @@ pub fn run() {
             get_export_progress,
             cancel_export,
             preview_bus_decoding,
+            get_exportable_signals,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

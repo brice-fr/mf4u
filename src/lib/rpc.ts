@@ -12,6 +12,12 @@ export interface Metadata {
   file_name: string;
   file_size: number;
   version: string;
+  /** True when the on-disk file_identification bytes are "MDF     " (finalized). */
+  is_finalized: boolean;
+  /** Raw unfinalized_standard_flags from the IDBLOCK (0 when finalized). */
+  unfinalized_flags: number;
+  /** True when all data groups have record_id_len == 0 (sorted/non-interleaved). */
+  is_sorted: boolean;
   start_time: string | null;
   end_time: string | null;
   duration_s: number | null;
@@ -94,6 +100,39 @@ export interface PreviewBusDecodingResult {
   previews: BusDecodingPreview[];
 }
 
+// ── Phase B: channel filter ────────────────────────────────────────────────── //
+
+export type SignalSource = "physical" | "decoded";
+
+/**
+ * A channel selection entry used to persist the filter state in the UI.
+ * The extra fields (acq_name, unit, source) are for display; the backend
+ * only reads group_index and channel_name.
+ */
+export interface FilteredChannel {
+  group_index: number;
+  channel_name: string;
+  acq_name: string;
+  unit: string;
+  source: SignalSource;
+}
+
+export interface ExportableChannel {
+  name: string;
+  unit: string;
+}
+
+export interface ExportableGroup {
+  group_index: number;
+  acq_name: string;
+  source: SignalSource;
+  channels: ExportableChannel[];
+}
+
+export interface ExportableSignals {
+  groups: ExportableGroup[];
+}
+
 // -------------------------------------------------------------------------- //
 // API
 // -------------------------------------------------------------------------- //
@@ -125,6 +164,7 @@ export async function startExport(
   dbAssignments?: DbAssignment[],
   flatten?: boolean,
   matLinkGroups?: boolean,
+  signalFilter?: FilteredChannel[] | null,
 ): Promise<{ job_id: string }> {
   return invoke<{ job_id: string }>("start_export", {
     sessionId,
@@ -133,6 +173,18 @@ export async function startExport(
     dbAssignments: dbAssignments && dbAssignments.length > 0 ? dbAssignments : null,
     flatten: flatten ?? false,
     matLinkGroups: matLinkGroups ?? false,
+    // Send only the minimal (group_index, channel_name) fields; backend ignores extras
+    signalFilter: signalFilter && signalFilter.length > 0 ? signalFilter : null,
+  });
+}
+
+export async function getExportableSignals(
+  sessionId: string,
+  dbAssignments?: DbAssignment[] | null,
+): Promise<ExportableSignals> {
+  return invoke<ExportableSignals>("get_exportable_signals", {
+    sessionId,
+    dbAssignments: dbAssignments && dbAssignments.length > 0 ? dbAssignments : null,
   });
 }
 

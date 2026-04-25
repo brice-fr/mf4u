@@ -73,30 +73,73 @@ def make_minimal() -> None:
 
 # --------------------------------------------------------------------------- #
 # 2. bus_raw.mf4
-#    One channel group containing a CAN_DataFrame channel so the
-#    bus-frame detector recognises it as a CAN bus-logging group.
+#    One channel group with a proper CAN bus-logging structure so that
+#    asammdf's extract_bus_logging can decode it against can_bus.dbc.
+#
+#    Channel group flags: FLAG_CG_BUS_EVENT (0x02)
+#    Acquisition source:  bus_type=BUS_TYPE_CAN (2)
+#    Sub-channels:
+#      CAN_DataFrame           — placeholder uint8 (required by detection logic)
+#      CAN_DataFrame.ID        — uint32, alternates 100 / 200 (matches DBC)
+#      CAN_DataFrame.BusChannel — uint8, all 1 (bus channel 1)
+#      CAN_DataFrame.IDE       — uint8, all 0 (standard addressing)
+#      CAN_DataFrame.DataBytes — uint8[N,8] with properly encoded signal values
+#
+#    Message 100 (EngineStatus, 8 B): EngineSpeed=1000 rpm, ThrottlePos=25 %
+#      EngineSpeed  raw = 10000 (= 1000/0.1), LE uint16 → [0x10, 0x27]
+#      ThrottlePos  raw = 65   (= (25+1)/0.4), uint8   → [0x41]
+#      bytes: [0x10, 0x27, 0x41, 0x00, 0x00, 0x00, 0x00, 0x00]
+#
+#    Message 200 (VehicleStatus, 4 B): VehicleSpeed=80 km/h, Gear=3
+#      VehicleSpeed raw = 1600 (= 80/0.05), LE uint16 → [0x40, 0x06]
+#      Gear         raw = 3, uint8              → [0x03]
+#      bytes: [0x40, 0x06, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00]
 # --------------------------------------------------------------------------- #
 
 def make_bus_raw() -> None:
     from asammdf import MDF, Signal  # type: ignore[import-untyped]
+    from asammdf.blocks.source_utils import Source  # type: ignore[import-untyped]
+    import asammdf.blocks.v4_constants as v4c  # type: ignore[import-untyped]
 
     mdf = MDF(version="4.10")
     mdf.start_time = datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
 
-    t = np.linspace(0.0, 0.1, 10, dtype=np.float64)
-    # A raw-looking uint64 payload — dtype and values don't matter for metadata tests.
-    payload = np.zeros(10, dtype=np.uint64)
-    # CAN frame IDs alternating between 100 and 200 — matching can_bus.dbc messages.
-    # These allow _get_group_can_ids() to return {100, 200} for the preview test.
-    can_ids = np.array([100, 200, 100, 200, 100, 200, 100, 200, 100, 200], dtype=np.uint32)
+    n = 10
+    t = np.linspace(0.0, 0.09, n, dtype=np.float64)
 
-    mdf.append(
+    can_ids     = np.array([100, 200, 100, 200, 100, 200, 100, 200, 100, 200], dtype=np.uint32)
+    bus_chans   = np.ones(n, dtype=np.uint8)
+    ide_flags   = np.zeros(n, dtype=np.uint8)
+
+    data_bytes = np.zeros((n, 8), dtype=np.uint8)
+    data_bytes[0::2] = [0x10, 0x27, 0x41, 0x00, 0x00, 0x00, 0x00, 0x00]  # EngineStatus
+    data_bytes[1::2] = [0x40, 0x06, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00]  # VehicleStatus
+
+    acq_source = Source(
+        name="CAN1", path="CAN1", comment="",
+        source_type=v4c.SOURCE_BUS, bus_type=v4c.BUS_TYPE_CAN,
+    )
+
+    cg_nr = mdf.append(
         [
-            Signal(samples=payload,  timestamps=t, name="CAN_DataFrame",    unit=""),
-            Signal(samples=can_ids,  timestamps=t, name="CAN_DataFrame.ID", unit=""),
+            Signal(samples=np.zeros(n, dtype=np.uint8), timestamps=t,
+                   name="CAN_DataFrame",             unit=""),
+            Signal(samples=can_ids,                   timestamps=t,
+                   name="CAN_DataFrame.ID",           unit=""),
+            Signal(samples=bus_chans,                 timestamps=t,
+                   name="CAN_DataFrame.BusChannel",   unit=""),
+            Signal(samples=ide_flags,                 timestamps=t,
+                   name="CAN_DataFrame.IDE",          unit=""),
+            Signal(samples=data_bytes,                timestamps=t,
+                   name="CAN_DataFrame.DataBytes",    unit=""),
         ],
         acq_name="CAN_bus",
+        acq_source=acq_source,
+        comment="Synthetic CAN bus-logging fixture",
     )
+    # Mark the channel group as a bus-event group so asammdf's
+    # extract_bus_logging picks it up for decoding.
+    mdf._mdf.groups[cg_nr].channel_group.flags |= v4c.FLAG_CG_BUS_EVENT
 
     mdf.header.comment = "Synthetic CAN bus-logging fixture"
 

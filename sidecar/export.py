@@ -50,6 +50,7 @@ def start(
     db_assignments: "list[dict] | None" = None,
     flatten: bool = False,
     mat_link_groups: bool = False,
+    signal_filter: "list[dict] | None" = None,
 ) -> str:
     """Start an export job in a background thread; return its job_id.
 
@@ -60,6 +61,10 @@ def start(
     XLSX), all channel groups are merged into a single timestamp-union table with
     NaN-filling for channels absent at a given timestamp.  TDMS and MF4 do not
     support flatten and will be exported normally.
+
+    If *signal_filter* is provided (a list of ``{"group_index": int, "channel_name": str}``
+    dicts), only the listed channels are written; all others are silently skipped.
+    Omit or pass ``None`` to export all channels.
     """
     # flatten only applies to tabular formats; MF4 always uses a single save() step
     do_flatten    = flatten and fmt not in ("tdms", "mf4")
@@ -71,6 +76,14 @@ def start(
 
     def _run() -> None:
         try:
+            # Build a fast lookup set for the signal filter (group_index, channel_name)
+            filter_set: "set[tuple[int, str]] | None" = None
+            if signal_filter:
+                filter_set = {
+                    (int(f["group_index"]), str(f["channel_name"]))
+                    for f in signal_filter
+                }
+
             active_mdf   = mdf
             original_mdf: Any = None
 
@@ -81,10 +94,11 @@ def start(
                     job.total = len(active_mdf.groups)
 
             if fmt == "mf4":
-                _do_mf4(active_mdf, output_path, job, original_mdf=original_mdf)
+                _do_mf4(active_mdf, output_path, job, original_mdf=original_mdf,
+                        filter_set=filter_set)
             elif do_flatten:
                 # Phase C — collect all groups into a flat table, then write once
-                ts, cols = _build_flat_table(active_mdf, job)
+                ts, cols = _build_flat_table(active_mdf, job, filter_set=filter_set)
                 if not job.cancel_requested and cols:
                     if fmt == "mat":
                         _write_flat_mat(output_path, ts, cols)
@@ -100,17 +114,17 @@ def start(
                         _write_flat_xlsx(output_path, ts, cols)
             elif fmt == "mat":
                 _do_mat(active_mdf, output_path, job,
-                        mat_link_groups=mat_link_groups)
+                        mat_link_groups=mat_link_groups, filter_set=filter_set)
             elif fmt == "tdms":
-                _do_tdms(active_mdf, output_path, job)
+                _do_tdms(active_mdf, output_path, job, filter_set=filter_set)
             elif fmt == "parquet":
-                _do_parquet(active_mdf, output_path, job)
+                _do_parquet(active_mdf, output_path, job, filter_set=filter_set)
             elif fmt == "csv":
-                _do_csv(active_mdf, output_path, job, delimiter=",")
+                _do_csv(active_mdf, output_path, job, delimiter=",", filter_set=filter_set)
             elif fmt == "tsv":
-                _do_csv(active_mdf, output_path, job, delimiter="\t")
+                _do_csv(active_mdf, output_path, job, delimiter="\t", filter_set=filter_set)
             elif fmt == "xlsx":
-                _do_xlsx(active_mdf, output_path, job)
+                _do_xlsx(active_mdf, output_path, job, filter_set=filter_set)
             else:
                 job.error  = f"unsupported format: {fmt!r}"
                 job.status = "error"
@@ -215,6 +229,7 @@ def _do_mat(
     output_path: str,
     job: _Job,
     mat_link_groups: bool = False,
+    filter_set: "set[tuple[int, str]] | None" = None,
 ) -> None:
     """Write a ``.mat`` v5 file.
 
@@ -260,6 +275,8 @@ def _do_mat(
             name = str(ch.name or "")
             if not name:
                 continue
+            if filter_set is not None and (i, name) not in filter_set:
+                continue
             try:
                 sig     = mdf.get(name, group=i, raw=False,
                                   ignore_invalidation_bits=True)
@@ -292,7 +309,8 @@ def _do_mat(
 # .tdms export
 # --------------------------------------------------------------------------- #
 
-def _do_tdms(mdf: Any, output_path: str, job: _Job) -> None:
+def _do_tdms(mdf: Any, output_path: str, job: _Job,
+             filter_set: "set[tuple[int, str]] | None" = None) -> None:
     try:
         from nptdms import TdmsWriter, ChannelObject  # type: ignore[import-untyped]
     except ImportError as exc:
@@ -313,6 +331,8 @@ def _do_tdms(mdf: Any, output_path: str, job: _Job) -> None:
             for ch in group.channels:
                 name = str(ch.name or "")
                 if not name:
+                    continue
+                if filter_set is not None and (i, name) not in filter_set:
                     continue
                 try:
                     sig     = mdf.get(name, group=i, raw=False,
@@ -335,7 +355,8 @@ def _do_tdms(mdf: Any, output_path: str, job: _Job) -> None:
 # .parquet export
 # --------------------------------------------------------------------------- #
 
-def _do_parquet(mdf: Any, output_path: str, job: _Job) -> None:
+def _do_parquet(mdf: Any, output_path: str, job: _Job,
+                filter_set: "set[tuple[int, str]] | None" = None) -> None:
     """
     Write one Parquet file per non-empty channel group.
 
@@ -384,6 +405,8 @@ def _do_parquet(mdf: Any, output_path: str, job: _Job) -> None:
         for ch in group.channels:
             ch_name = str(ch.name or "")
             if not ch_name:
+                continue
+            if filter_set is not None and (i, ch_name) not in filter_set:
                 continue
             try:
                 sig = mdf.get(ch_name, group=i, raw=False,
@@ -439,7 +462,8 @@ def _do_parquet(mdf: Any, output_path: str, job: _Job) -> None:
 # .csv / .tsv export
 # --------------------------------------------------------------------------- #
 
-def _do_csv(mdf: Any, output_path: str, job: _Job, delimiter: str = ",") -> None:
+def _do_csv(mdf: Any, output_path: str, job: _Job, delimiter: str = ",",
+            filter_set: "set[tuple[int, str]] | None" = None) -> None:
     """
     Write one delimited-text file per non-empty channel group.
 
@@ -482,6 +506,8 @@ def _do_csv(mdf: Any, output_path: str, job: _Job, delimiter: str = ",") -> None
         for ch in group.channels:
             ch_name = str(ch.name or "")
             if not ch_name:
+                continue
+            if filter_set is not None and (i, ch_name) not in filter_set:
                 continue
             try:
                 sig = mdf.get(ch_name, group=i, raw=False,
@@ -535,7 +561,8 @@ def _do_csv(mdf: Any, output_path: str, job: _Job, delimiter: str = ",") -> None
 # .xlsx export
 # --------------------------------------------------------------------------- #
 
-def _do_xlsx(mdf: Any, output_path: str, job: _Job) -> None:
+def _do_xlsx(mdf: Any, output_path: str, job: _Job,
+             filter_set: "set[tuple[int, str]] | None" = None) -> None:
     """
     Write a single Excel workbook with one worksheet per non-empty channel group.
 
@@ -575,6 +602,8 @@ def _do_xlsx(mdf: Any, output_path: str, job: _Job) -> None:
         for ch in group.channels:
             ch_name = str(ch.name or "")
             if not ch_name:
+                continue
+            if filter_set is not None and (i, ch_name) not in filter_set:
                 continue
             try:
                 sig = mdf.get(ch_name, group=i, raw=False,
@@ -622,11 +651,48 @@ def _do_xlsx(mdf: Any, output_path: str, job: _Job) -> None:
 # .mf4 re-export (Phase D)
 # --------------------------------------------------------------------------- #
 
+# Raw-bus channel names — presence of any of these means the group is still a
+# genuine bus-frame group and must keep its BUS_EVENT flag.
+_RAW_BUS_CHANNEL_NAMES: frozenset[str] = frozenset({
+    "CAN_DataFrame", "CAN_RemoteFrame", "CAN_ErrorFrame", "CAN_DataFrame_Raw",
+    "CAN_DataFrame.BRS", "CAN_DataFrame.EDL",
+    "LIN_Frame", "LIN_SyncError", "LIN_ReceiveError", "LIN_WakeUp",
+    "LIN_Checksum_Error",
+    "FlexRay_Frame", "FlexRay_RxError", "FlexRay_TxError", "FlexRay_PDU",
+    "Ethernet_Frame", "Ethernet_RxError", "Ethernet_TxError",
+    "MOST_Frame",
+})
+
+
+def _clear_decoded_bus_event_flags(mdf_obj: Any) -> None:
+    """Clear the MDF4 BUS_EVENT channel-group flag (cg_flags bit 0x02) from
+    every group that has the flag set but no longer contains raw-bus channels.
+
+    ``extract_bus_logging`` replaces raw-frame groups with decoded-signal
+    groups at the same indices but leaves the original ``cg_flags`` intact,
+    which causes downstream viewers to display the decoded groups as raw-frame
+    groups.  Clearing the flag (while leaving the group untouched in all other
+    respects) corrects that classification.
+
+    Groups that still hold raw-bus channel names (e.g. undecoded frame groups
+    for which no DB was assigned) keep their flag unchanged.
+    """
+    for grp in mdf_obj.groups:
+        cg = grp.channel_group
+        if not (hasattr(cg, "flags") and (int(cg.flags) & 0x02)):
+            continue  # BUS_EVENT flag not set — nothing to fix
+        ch_names = {ch.name for ch in grp.channels}
+        if not (ch_names & _RAW_BUS_CHANNEL_NAMES):
+            # No raw-bus channels remain — this is a decoded group
+            cg.flags = int(cg.flags) & ~0x02
+
+
 def _do_mf4(
     mdf: Any,
     output_path: str,
     job: _Job,
     original_mdf: Any = None,
+    filter_set: "set[tuple[int, str]] | None" = None,
 ) -> None:
     """Re-export *mdf* to an MF4 file using ``MDF.save()``.
 
@@ -635,6 +701,9 @@ def _do_mf4(
     When *original_mdf* is provided (i.e., *mdf* came from
     ``extract_bus_logging``), the original HD metadata fields are copied
     onto the decoded MDF header before saving so provenance is preserved.
+
+    When *filter_set* is provided, only the listed channels are kept via
+    ``MDF.filter()`` before saving.
     """
     job.total = 1
     job.done  = 0
@@ -653,8 +722,24 @@ def _do_mf4(
         except Exception:  # noqa: BLE001
             pass
 
+    mdf_to_save = mdf
+    if filter_set is not None:
+        channel_names = sorted({ch_name for _, ch_name in filter_set})
+        try:
+            mdf_to_save = mdf.filter(channel_names)
+        except Exception:  # noqa: BLE001
+            mdf_to_save = mdf  # fallback: save unfiltered
+
+    # When bus decoding was applied, clear the BUS_EVENT flag (bit 0x02) from
+    # channel groups that no longer contain raw-bus channels.  asammdf's
+    # extract_bus_logging keeps the original cg_flags on the decoded groups, so
+    # without this step MDF viewers mark them as raw-frame groups even though
+    # they now hold physical signals.
+    if original_mdf is not None:
+        _clear_decoded_bus_event_flags(mdf_to_save)
+
     job._cleanup.append(output_path)
-    mdf.save(output_path, overwrite=True)
+    mdf_to_save.save(output_path, overwrite=True)
     job.done = 1
 
 
@@ -665,6 +750,7 @@ def _do_mf4(
 def _build_flat_table(
     mdf: Any,
     job: _Job,
+    filter_set: "set[tuple[int, str]] | None" = None,
 ) -> "tuple[Any, dict[str, Any]]":
     """Collect all numeric channels across all groups into a flat timestamp-union table.
 
@@ -690,6 +776,8 @@ def _build_flat_table(
         for ch in group.channels:
             ch_name = str(ch.name or "")
             if not ch_name:
+                continue
+            if filter_set is not None and (i, ch_name) not in filter_set:
                 continue
             try:
                 sig = mdf.get(ch_name, group=i, raw=False,
@@ -849,6 +937,91 @@ def _write_flat_xlsx(
         ws.append(row)
 
     wb.save(output_path)
+
+
+# --------------------------------------------------------------------------- #
+# Channel-filter helpers (Phase B)
+# --------------------------------------------------------------------------- #
+
+def get_exportable_signals(
+    mdf: Any,
+    db_assignments: "list[dict] | None" = None,
+) -> dict:
+    """Return all exportable channels grouped by channel group.
+
+    Without *db_assignments* (or empty list): returns only physical (non-raw-frame)
+    channel groups, each with ``source="physical"``.
+
+    With *db_assignments*: additionally runs ``extract_bus_logging`` and returns
+    all decoded groups with ``source="decoded"``.  Physical groups are still
+    included.  Decoded group indices are their positions in the decoded MDF
+    (0, 1, 2, …), which are independent of the original MDF's group indices.
+
+    Return schema::
+
+        {
+            "groups": [
+                {
+                    "group_index": int,
+                    "acq_name":    str,
+                    "source":      "physical" | "decoded",
+                    "channels":    [{"name": str, "unit": str}],
+                }
+            ]
+        }
+    """
+    import metadata as _meta
+
+    groups_out: list[dict] = []
+
+    # ── Physical channels from non-bus groups ────────────────────────────────
+    for i, group in enumerate(mdf.groups):
+        if _meta.group_bus_type(group) is not None:
+            continue  # skip raw-frame groups
+
+        cg = group.channel_group
+        acq_name = str(getattr(cg, "acq_name", "") or "").strip() or f"Group {i}"
+
+        channels_out = [
+            {"name": str(ch.name or ""), "unit": str(ch.unit or "").strip()}
+            for ch in group.channels
+            if ch.name
+        ]
+        if channels_out:
+            groups_out.append({
+                "group_index": i,
+                "acq_name":    acq_name,
+                "source":      "physical",
+                "channels":    channels_out,
+            })
+
+    # ── Decoded channels when db_assignments are provided ───────────────────
+    # extract_bus_logging produces a brand-new MDF containing *only* the
+    # decoded groups — one per matched DBC message — appended in order.
+    # Its group indices (0, 1, 2, …) are independent of the original MDF's
+    # indices.  We must iterate the decoded MDF directly and use its actual
+    # indices; filtering by the original bus-raw indices would discard most
+    # decoded groups.
+    if db_assignments:
+        decoded_mdf = _build_decoded_mdf(mdf, db_assignments)
+        for i, group in enumerate(decoded_mdf.groups):
+            cg = group.channel_group
+            acq_name = str(getattr(cg, "acq_name", "") or "").strip() or f"Group {i}"
+
+            channels_out = [
+                {"name": str(ch.name or ""), "unit": str(ch.unit or "").strip()}
+                for ch in group.channels
+                if ch.name
+            ]
+            if channels_out:
+                groups_out.append({
+                    "group_index": i,
+                    "acq_name":    acq_name,
+                    "source":      "decoded",
+                    "channels":    channels_out,
+                })
+
+    return {"groups": groups_out}
 
 
 # --------------------------------------------------------------------------- #

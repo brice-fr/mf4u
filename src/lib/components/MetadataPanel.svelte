@@ -17,6 +17,30 @@
     return { label, value: (value ?? "—") as string | number };
   }
 
+  // ── finalization flag decoding ─────────────────────────────────────────── //
+  const UNFIN_FLAG_NAMES: [number, string][] = [
+    [0x01, "CG/CA cycle counter update"],
+    [0x02, "SR cycle counter update"],
+    [0x04, "Last DT block length"],
+    [0x08, "Last RD block length"],
+    [0x10, "Last DL block link"],
+    [0x20, "VLSD CG byte counts"],
+    [0x40, "VLSD channel offsets"],
+  ];
+
+  const unfinFlagList = $derived.by(() => {
+    if (meta.is_finalized) return [];
+    return UNFIN_FLAG_NAMES
+      .filter(([bit]) => (meta.unfinalized_flags & bit) !== 0)
+      .map(([, name]) => name);
+  });
+
+  const unfinTooltip = $derived(
+    unfinFlagList.length > 0
+      ? "Pending: " + unfinFlagList.join(", ")
+      : "Unfinalized (no standard flags set)"
+  );
+
   const groups = $derived([
     {
       title: "File",
@@ -66,7 +90,7 @@
 
 <section class="panel">
   <!-- info cards -->
-  {#each groups as grp}
+  {#each groups as grp, gi}
     <div class="group">
       <h3>{grp.title}</h3>
       <dl>
@@ -74,6 +98,29 @@
           <dt>{label}</dt>
           <dd>{value}</dd>
         {/each}
+        <!-- Finalization + sort rows — only in the File card (index 0) -->
+        {#if gi === 0}
+          <dt>Finalized</dt>
+          <dd>
+            {#if meta.is_finalized === true}
+              Yes
+            {:else if meta.is_finalized === false}
+              <span class="fin-badge fin-warn" title={unfinTooltip}>⚠ no</span>
+            {:else}
+              <span>—</span>
+            {/if}
+          </dd>
+          <dt>Sorted</dt>
+          <dd>
+            {#if meta.is_sorted === true}
+              Yes
+            {:else if meta.is_sorted === false}
+              <span class="fin-badge fin-warn" title="Records are interleaved across channel groups">⚠ no</span>
+            {:else}
+              <span>—</span>
+            {/if}
+          </dd>
+        {/if}
       </dl>
     </div>
   {/each}
@@ -162,6 +209,17 @@
   dt { color: #777; font-size: 0.8rem; white-space: nowrap; }
   .bus-type { font-weight: 500; /* colour injected via inline style from busColors.ts */ }
   dd { color: #ddd; font-size: 0.8rem; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* finalization badge */
+  .fin-badge {
+    display: inline-block;
+    font-size: 0.72rem;
+    font-weight: 600;
+    border-radius: 3px;
+    padding: 0 5px;
+    line-height: 1.6;
+  }
+  .fin-warn { color: #e8a838; background: #1e1608; border: 1px solid #3d2e10; cursor: help; }
 
   .attach-list {
     margin: 0;

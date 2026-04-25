@@ -286,7 +286,178 @@ environment, or configure `bundle.windows.certificateThumbprint` in `tauri.conf.
 
 ---
 
-## Useful one-liners
+## Git & GitHub housekeeping
+
+### Everyday workflow — save a change locally
+
+```bash
+# 1. See what changed (files modified / new / deleted)
+git status
+
+# 2. Stage the files you want to include in the commit
+#    Stage a specific file:
+git add src/lib/components/MetadataPanel.svelte
+
+#    Stage everything in the current directory:
+git add .
+
+# 3. Commit with a message
+git commit -m "fix: clear BUS_EVENT flag on decoded MF4 groups"
+
+# 4. Check the log to confirm
+git log --oneline -5
+```
+
+> **Tip:** use a short prefix to keep the history readable:
+> `feat:` new feature · `fix:` bug fix · `refactor:` code cleanup ·
+> `test:` test-only change · `docs:` docs only · `chore:` housekeeping
+
+---
+
+### Push a local commit to GitHub
+
+```bash
+# Push the current branch to its upstream remote branch
+git push
+
+# First-ever push of a new branch (sets the upstream tracking reference)
+git push -u origin main
+```
+
+---
+
+### Bump the version number
+
+The version lives in **three files** — keep them in sync:
+
+| File | Field |
+|---|---|
+| `package.json` | `"version": "…"` |
+| `src-tauri/tauri.conf.json` | `"version": "…"` |
+| `src-tauri/Cargo.toml` | `version = "…"` |
+
+**Option A — Edit manually** (open each file, find the `version` line, type the new value).
+
+**Option B — One-liner on macOS/Linux** (replace `0.1.0` with current, `0.2.0` with new):
+```bash
+OLD=0.1.0
+NEW=0.2.0
+
+# macOS sed requires the empty-string argument after -i
+sed -i '' "s/\"version\": \"$OLD\"/\"version\": \"$NEW\"/" package.json
+sed -i '' "s/\"version\": \"$OLD\"/\"version\": \"$NEW\"/" src-tauri/tauri.conf.json
+sed -i '' "s/^version = \"$OLD\"/version = \"$NEW\"/"     src-tauri/Cargo.toml
+
+# Verify all three changed
+grep '"version"' package.json src-tauri/tauri.conf.json
+grep '^version'  src-tauri/Cargo.toml
+```
+
+> After bumping, commit the three files together:
+> ```bash
+> git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml
+> git commit -m "chore: bump version to 0.2.0"
+> git push
+> ```
+
+---
+
+### Tag a version and trigger the CI release
+
+The release workflow (`release.yml`) starts automatically when a tag of the
+form `v0.2.0` is pushed to GitHub.  It builds the macOS and Windows installers
+and creates a **draft** release — nothing is public yet.
+
+```bash
+# 1. Make sure your local main is up to date and clean
+git status            # should say "nothing to commit"
+git pull              # pull any remote changes
+
+# 2. Create an annotated tag (the message appears on the GitHub release page)
+git tag -a v0.2.0 -m "Release v0.2.0"
+
+# 3. Push the tag — this fires the CI workflow immediately
+git push origin v0.2.0
+
+# Verify the tag was pushed
+git ls-remote --tags origin
+```
+
+> **Annotated vs lightweight tags:** `-a` (annotated) tags include author,
+> date, and a message — always prefer these for releases.  Plain
+> `git tag v0.2.0` (no `-a`) creates a lightweight tag that still works but
+> carries no metadata.
+
+#### Alternatively — trigger without pushing a tag (manual dispatch)
+
+If you want to run the release workflow without creating a permanent tag
+(useful for testing CI):
+
+1. Go to **GitHub → Actions → Release** workflow.
+2. Click **Run workflow**.
+3. Type the tag name (e.g. `v0.2.0`) in the input field and click **Run workflow**.
+
+> This does *not* push a git tag to the repository; the artifacts are uploaded
+> to a draft release but you must create the tag separately if you want it in
+> the git history.
+
+---
+
+### Monitor the CI build
+
+After pushing the tag, the workflow runs three parallel jobs and then
+assembles the release:
+
+```
+sidecar-macos-arm64  ──┐
+                        ├──► release-macos  (signs + notarises + uploads DMGs)
+sidecar-macos-x86_64 ──┘
+release-windows             (builds NSIS installer + uploads to same draft)
+```
+
+Watch progress:  **GitHub → Actions → Release** — click the run that appeared
+after your `git push`.  The whole pipeline takes roughly 15–25 minutes.
+
+---
+
+### Publish the draft release
+
+Once all CI jobs are green the release exists as a **draft** — only you can
+see it.  To make it public:
+
+1. Go to **GitHub → Releases** (side panel on the repo home page, or
+   `https://github.com/<you>/mf4u/releases`).
+2. Find the draft labelled **mf4u v0.2.0** and click the pencil ✏️ icon.
+3. Review the auto-generated release notes / body text; edit if needed.
+4. Click **Publish release**.
+
+The release is now public and the download links are live.
+
+---
+
+### Useful tag management commands
+
+```bash
+# List all local tags
+git tag
+
+# List tags with their messages
+git tag -n
+
+# Delete a local tag (e.g. if you mis-typed it before pushing)
+git tag -d v0.2.0-typo
+
+# Delete a tag from GitHub (use with care — breaks any release that references it)
+git push origin --delete v0.2.0-typo
+
+# Move a tag to a different commit (delete + re-create)
+git tag -d v0.2.0
+git tag -a v0.2.0 -m "Release v0.2.0"
+git push origin --delete v0.2.0
+git push origin v0.2.0
+```
+
+---
 
 ```bash
 # Check installed Rust targets

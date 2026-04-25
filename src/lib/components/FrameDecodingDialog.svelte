@@ -342,11 +342,17 @@
                     {#if !preview || preview.status === "loading"}
                       <span class="prev-spin">⏳</span>
                     {:else if preview.status === "ok"}
-                      <span class="prev-ok">✓ {preview.matched_messages} msg · {preview.signal_count} sig</span>
+                      <span class="prev-ok">
+                        <span class="prev-check">✓</span>
+                        <span class="prev-n">{preview.matched_messages}</span>
+                        <span class="prev-lbl">msg ·</span>
+                        <span class="prev-n prev-n-sig">{preview.signal_count}</span>
+                        <span class="prev-lbl">sig</span>
+                      </span>
                     {:else if preview.status === "none"}
-                      <span class="prev-none">✗ 0 messages matched</span>
+                      <span class="prev-none">✗ no match</span>
                     {:else}
-                      <span class="prev-err" title={preview.error ?? ""}>✗ load error</span>
+                      <span class="prev-err" title={preview.error ?? ""}>✗ error</span>
                     {/if}
                   </span>
                 </div>
@@ -437,6 +443,7 @@
     flex-direction: column;
     gap: 0.5rem;
     min-height: 0;
+    min-width: 0; /* allow grid item to shrink below content size */
   }
 
   .panel-label {
@@ -535,6 +542,7 @@
 
   .db-list {
     flex: 1;
+    overflow-x: hidden; /* prevent implicit overflow-x: auto from overflow-y: auto */
     overflow-y: auto;
     display: flex;
     flex-direction: column;
@@ -606,11 +614,34 @@
     white-space: nowrap;
     flex-shrink: 0;
     min-width: 8rem;
-    text-align: right;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
   }
 
   .prev-spin { color: #666; }
-  .prev-ok   { color: #4ec994; }
+
+  .prev-ok {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2em;
+    color: #4ec994;
+  }
+
+  /* Fixed-width number cells so the badge never clips "sig". */
+  .prev-n {
+    display: inline-block;
+    min-width: 3ch;           /* holds up to 999 */
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  .prev-n-sig {
+    min-width: 4ch;           /* holds up to 9999 */
+  }
+
+  .prev-lbl  { color: #4ec994; }
+  .prev-check { flex-shrink: 0; }
+
   .prev-none { color: #eb5757; }
   .prev-err  { color: #c8832a; cursor: help; }
 
