@@ -36,13 +36,16 @@
 
   // ── Phase A: frame decoding session config ─────────────────────────────── //
   let decodingConfig: DbAssignment[] = $state([]);
+  /** Path of the last file dropped while the FrameDecodingDialog is open. */
+  let frameDecodingDropPath: string | null = $state(null);
 
   // ── Phase B: channel filter session config ─────────────────────────────── //
   /** null = no filter (export everything); array = explicit inclusion list. */
   let selectedSignals: FilteredChannel[] | null = $state(null);
 
   // ── signal tree controls (driven from status bar) ─────────────────────── //
-  let showEmptyGroups: boolean              = $state(false);
+  let showEmptyGroups:    boolean              = $state(false);
+  let showEmptyRecGroups: boolean              = $state(true);
   let treeExpanded: Record<number, boolean> = $state({});
 
   function expandAll()   { treeExpanded = Object.fromEntries(groups.map((g) => [g.index, true])); }
@@ -50,6 +53,7 @@
 
   // counts for status bar and metadata panel
   const emptyGroupCount      = $derived(groups.filter((g) => g.channels.length === 0).length);
+  const emptyRecGroupCount   = $derived(groups.filter((g) => g.channels.length > 0 && g.cycles_nr === 0).length);
   const totalChannelCount    = $derived(groups.reduce((n, g) => n + g.channels.length, 0));
   const physicalSignalCount  = $derived(
     groups.filter((g) => !g.is_bus_raw).reduce((n, g) => n + g.channels.length, 0),
@@ -120,7 +124,7 @@
   async function pickFile() {
     const path = await openDialog({
       multiple: false,
-      filters: [{ name: "MF4 / MDF", extensions: ["mf4", "mdf"] }],
+      filters: [{ name: "MF4 / MDF / BLF", extensions: ["mf4", "mdf", "blf"] }],
     });
     if (path) await loadFile(path as string);
   }
@@ -134,13 +138,22 @@
     win.onDragDropEvent((ev) => {
       const t = ev.payload.type;
       if (t === "enter" || t === "over") {
-        dragging = true;
+        // Suppress the main drop-zone highlight while the frame decoding dialog
+        // is open — the dialog handles its own visual feedback.
+        if (!showFrameDecoding) dragging = true;
       } else if (t === "leave") {
         dragging = false;
       } else if (t === "drop") {
         dragging = false;
         const paths = (ev.payload as unknown as { paths: string[] }).paths ?? [];
-        if (paths.length > 0) loadFile(paths[0]);
+        if (paths.length > 0) {
+          if (showFrameDecoding) {
+            // Route the drop to the frame decoding dialog instead of opening as MF4.
+            frameDecodingDropPath = paths[0];
+          } else {
+            loadFile(paths[0]);
+          }
+        }
       }
     }).then((fn) => { dndCleanup = fn; });
 
@@ -287,6 +300,8 @@
       dbAssignments={decodingConfig}
       onchange={(cfg) => { decodingConfig = cfg; selectedSignals = null; }}
       onclose={() => (showFrameDecoding = false)}
+      externalDropPath={frameDecodingDropPath}
+      onclearexternaldrop={() => { frameDecodingDropPath = null; }}
     />
   {/if}
 
@@ -323,7 +338,7 @@
   {#if phase === "idle" || phase === "error"}
     <div class="drop-zone" class:drag-over={dragging} role="button" tabindex="0"
          onclick={pickFile} onkeydown={(e) => e.key === "Enter" && pickFile()}>
-      <p class="drop-hint">Drop an <code>.mf4</code> file here or press <kbd>⌘O</kbd></p>
+      <p class="drop-hint">Drop an <code>.mf4</code> or <code>.blf</code> file here or press <kbd>⌘O</kbd></p>
       {#if phase === "error"}
         <p class="error-msg">{errorMsg}</p>
       {/if}
@@ -343,7 +358,7 @@
       </div>
       <div class="right-pane">
         <SignalTree {groups} sessionId={sessionId!}
-          {showEmptyGroups} bind:expanded={treeExpanded} />
+          {showEmptyGroups} {showEmptyRecGroups} bind:expanded={treeExpanded} />
       </div>
     </div>
   {/if}
@@ -356,13 +371,22 @@
         · {totalChannelCount.toLocaleString()} signal{totalChannelCount !== 1 ? "s" : ""}
         · {physicalSignalCount.toLocaleString()} physical
         {#if emptyGroupCount > 0}
-          · <span class="status-dim">{emptyGroupCount} empty group{emptyGroupCount !== 1 ? "s" : ""}</span>
+          · <span class="status-dim">{emptyGroupCount} empty sig group{emptyGroupCount !== 1 ? "s" : ""}</span>
+        {/if}
+        {#if emptyRecGroupCount > 0}
+          · <span class="status-dim">{emptyRecGroupCount} empty rec group{emptyRecGroupCount !== 1 ? "s" : ""}</span>
         {/if}
       </span>
       <span class="status-actions">
         {#if emptyGroupCount > 0}
           <button class="status-link" onclick={() => (showEmptyGroups = !showEmptyGroups)}>
-            {showEmptyGroups ? "hide empty groups" : "show empty groups"}
+            {showEmptyGroups ? "hide empty sig groups" : "show empty sig groups"}
+          </button>
+          <span class="status-sep">·</span>
+        {/if}
+        {#if emptyRecGroupCount > 0}
+          <button class="status-link" onclick={() => (showEmptyRecGroups = !showEmptyRecGroups)}>
+            {showEmptyRecGroups ? "hide empty rec groups" : "show empty rec groups"}
           </button>
           <span class="status-sep">·</span>
         {/if}

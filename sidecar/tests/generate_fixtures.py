@@ -193,6 +193,56 @@ def make_multi_group() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# 4. can_bus.blf
+#    CAN bus BLF fixture mirroring bus_raw.mf4 — same IDs (100, 200) and
+#    payloads so that can_bus.dbc decode tests apply to both formats.
+#
+#    Message 100 (EngineStatus):  10 Rx frames on channel 1
+#    Message 200 (VehicleStatus):  5 Rx frames on channel 1
+#    (Odd-indexed samples are ID=200 and even-indexed are ID=100.)
+# --------------------------------------------------------------------------- #
+
+def make_blf() -> None:
+    try:
+        import can  # type: ignore[import-untyped]
+    except ImportError:
+        print("  skipped can_bus.blf — python-can not installed")
+        return
+
+    from datetime import datetime, timezone as tz
+
+    # Use the same recording base time as the other fixtures.
+    t_base = datetime(2024, 1, 15, 10, 0, 0, tzinfo=tz.utc).timestamp()
+    dst = _path("can_bus.blf")
+
+    with can.BLFWriter(dst) as writer:
+        n = 10
+        for i in range(n):
+            t = t_base + i * 0.01
+            if i % 2 == 0:
+                # EngineStatus ID=100: EngineSpeed=1000 rpm, ThrottlePos=25 %
+                msg = can.Message(
+                    arbitration_id = 100,
+                    data           = bytes([0x10, 0x27, 0x41, 0x00, 0x00, 0x00, 0x00, 0x00]),
+                    is_extended_id = False,
+                    channel        = 1,
+                    timestamp      = t,
+                )
+            else:
+                # VehicleStatus ID=200: VehicleSpeed=80 km/h, Gear=3
+                msg = can.Message(
+                    arbitration_id = 200,
+                    data           = bytes([0x40, 0x06, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00]),
+                    is_extended_id = False,
+                    channel        = 1,
+                    timestamp      = t,
+                )
+            writer(msg)
+
+    print(f"  wrote {dst}  ({os.path.getsize(dst):,} bytes)")
+
+
+# --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
 
@@ -201,4 +251,5 @@ if __name__ == "__main__":
     make_minimal()
     make_bus_raw()
     make_multi_group()
+    make_blf()
     print("Done.")

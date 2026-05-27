@@ -49,10 +49,12 @@ def extract(mdf_obj: Any, file_path: str) -> dict[str, Any]:
 
     # ── finalization state ────────────────────────────────────────────────── #
     # Read the raw identification block from the ORIGINAL file on disk.
-    # asammdf never modifies the original file; unfinalized files are copied to
-    # a temp location before in-memory finalization, so this read is always safe
-    # and reflects the true on-disk state.
-    is_finalized, unfinalized_flags = _read_finalization(file_path)
+    # For BLF files the identification block is not an MDF header, so
+    # _read_finalization returns (None, 0, "") and those fields are omitted.
+    # asammdf never modifies the original MF4 file; unfinalized files are copied
+    # to a temp location before in-memory finalization, so this read is always
+    # safe and reflects the true on-disk state.
+    is_finalized, unfinalized_flags, program_id = _read_finalization(file_path)
 
     # ── timing ──────────────────────────────────────────────────────────── #
     start_dt = mdf_obj.start_time          # datetime | None
@@ -78,10 +80,15 @@ def extract(mdf_obj: Any, file_path: str) -> dict[str, Any]:
     # Non-zero (1, 2, 4, 8 bytes) means unsorted / interleaved.
     # asammdf's _sort() reads this field but never resets it, so it always
     # reflects the true on-disk value even after the in-memory sort runs.
-    is_sorted = all(
-        getattr(getattr(g, "data_group", None), "record_id_len", 0) == 0
-        for g in groups
-    )
+    # For BLF-derived (in-memory) MDF objects the concept does not apply;
+    # is_finalized is None for those files, so we use the same guard.
+    if is_finalized is None:
+        is_sorted: bool | None = None  # N/A for non-MDF source files
+    else:
+        is_sorted = all(
+            getattr(getattr(g, "data_group", None), "record_id_len", 0) == 0
+            for g in groups
+        )
 
     # ── per-DG compression state ─────────────────────────────────────────── #
     dg_compression = [_group_compression_state(mdf_obj, g) for g in groups]
@@ -104,6 +111,7 @@ def extract(mdf_obj: Any, file_path: str) -> dict[str, Any]:
         "file_name":        os.path.basename(file_path),
         "file_size":        os.path.getsize(file_path),
         "version":          mdf_obj.version,
+        "program_id":       program_id,
         "is_finalized":     is_finalized,
         "unfinalized_flags": unfinalized_flags,
         "start_time":       start_iso,
@@ -130,9 +138,12 @@ def extract(mdf_obj: Any, file_path: str) -> dict[str, Any]:
 # Internal helpers
 # --------------------------------------------------------------------------- #
 
-def _read_finalization(file_path: str) -> tuple[bool, int]:
+def _read_finalization(file_path: str) -> tuple[bool | None, int, str]:
     """Read the MDF identification block directly from *file_path* and return
-    ``(is_finalized, unfinalized_standard_flags)``.
+    ``(is_finalized, unfinalized_standard_flags, program_id)``.
+
+    Returns ``(None, 0, "")`` for non-MDF source files (BLF, …) where the
+    concepts of finalization and sort state do not apply.
 
     The identification block is the first 64 bytes of every MDF file (same
     layout for MDF 2, 3 and 4):
@@ -143,6 +154,8 @@ def _read_finalization(file_path: str) -> tuple[bool, int]:
                      Real-world tools use various trailing-pad characters (spaces,
                      nulls, tabs), so we always compare the stripped form.
       • bytes  8–15: ``version_str`` (e.g. b"4.10    " or b"3.30    ")
+      • bytes 16–23: ``program_identification`` — name of the tool that wrote
+                     the file, null- or space-padded, decoded as UTF-8.
       • bytes 60–61: ``unfinalized_standard_flags`` (uint16 LE)
                      Only meaningful for MDF 4.x — in MDF 2/3 these bytes
                      may hold unrelated data and must be ignored.
@@ -156,18 +169,31 @@ def _read_finalization(file_path: str) -> tuple[bool, int]:
     MDF 4.10+ file it copies it to a temp directory and finalises only the copy.
     Reading from *file_path* therefore always reflects the true on-disk state.
 
-    On any read error or truncated file returns ``(True, 0)`` — treat unknown
-    as finalized so the UI stays clean.
+    On any read error or truncated file returns ``(True, 0, "")`` — treat
+    unknown as finalized so the UI stays clean.
     """
     try:
         with open(file_path, "rb") as fh:
             raw = fh.read(64)
+
+        # Non-MDF files: BLF format uses "LOGG" as its 4-byte file signature
+        # (Vector's Binary Logging Format file magic).  ASC files are plain
+        # text.  Return None so callers know finalization/sort state is N/A.
+        if len(raw) >= 4 and raw[:4] == b"LOGG":
+            return None, 0, ""
+
         if len(raw) < 64:
-            return True, 0
+            return True, 0, ""
 
         file_id     = raw[:8]
         version_str = raw[8:16]
+        prog_raw    = raw[16:24]
         unfin_flags = int.from_bytes(raw[60:62], "little")
+
+        # Decode program identification: strip null bytes then whitespace,
+        # then decode as UTF-8 (replace any non-UTF-8 bytes with the
+        # replacement character so we never raise on malformed data).
+        program_id = prog_raw.rstrip(b"\x00").decode("utf-8", errors="replace").strip()
 
         # Strip trailing whitespace chars (space, tab, CR, LF …) to normalise
         # across the many padding styles used by different logger tools.
@@ -178,17 +204,17 @@ def _read_finalization(file_path: str) -> tuple[bool, int]:
 
         # Rule 1: explicitly marked unfinalized
         if file_id_stripped == b"UnFinMF":
-            return False, unfin_flags
+            return False, unfin_flags, program_id
 
         # Rule 2: MDF 4.x with pending work items
         is_mdf4 = version_str.startswith(b"4")
         if is_mdf4 and unfin_flags != 0:
-            return False, unfin_flags
+            return False, unfin_flags, program_id
 
-        return True, 0
+        return True, 0, program_id
 
     except OSError:
-        return True, 0
+        return True, 0, ""
 
 
 def _parse_hd_comment(raw: str) -> dict[str, str]:

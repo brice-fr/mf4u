@@ -48,6 +48,7 @@
         row("File",        meta.file_name),
         row("Size",        formatBytes(meta.file_size)),
         row("MDF version", meta.version),
+        row("Program ID",  meta.program_id || null),
       ],
     },
     {

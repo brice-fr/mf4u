@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
   import { previewBusDecoding } from "$lib/rpc";
   import type { GroupInfo, DbAssignment, BusDecodingPreview } from "$lib/rpc";
@@ -10,12 +11,16 @@
     dbAssignments,
     onchange,
     onclose,
+    externalDropPath    = null,
+    onclearexternaldrop,
   }: {
-    groups:        GroupInfo[];
-    sessionId:     string;
-    dbAssignments: DbAssignment[];
-    onchange:      (assignments: DbAssignment[]) => void;
-    onclose:       () => void;
+    groups:               GroupInfo[];
+    sessionId:            string;
+    dbAssignments:        DbAssignment[];
+    onchange:             (assignments: DbAssignment[]) => void;
+    onclose:              () => void;
+    externalDropPath?:    string | null;
+    onclearexternaldrop?: () => void;
   } = $props();
 
   // ── derived data ──────────────────────────────────────────────────────────── //
@@ -37,6 +42,7 @@
 
   let selectedIndices  = $state(new Set<number>());
   let lastClickedIndex = $state<number | null>(null);
+  let isDragOver: boolean = $state(false);
 
   const selectedList = $derived([...selectedIndices].sort((a, b) => a - b));
   const allSelected  = $derived(
@@ -129,6 +135,33 @@
       // Ignore transient preview errors — badge stays at "loading" until next change.
     }
   }
+
+  // ── external drop (Tauri OS-level drag-and-drop routed from +page.svelte) ──── //
+
+  $effect(() => {
+    const path = externalDropPath;            // only tracked reactive dep
+    if (!path) return;
+    const lower = path.toLowerCase();
+    if (!lower.endsWith(".dbc") && !lower.endsWith(".arxml")) {
+      onclearexternaldrop?.();
+      return;
+    }
+    // Read selectedList and assignmentMap inside untrack so they are not
+    // tracked as dependencies — avoids an infinite re-run cycle when pushMap
+    // updates dbAssignments and assignmentMap re-derives.
+    untrack(() => {
+      if (selectedList.length > 0) {
+        const m = cloneMap();
+        for (const idx of selectedList) {
+          const paths = m.get(idx) ?? [];
+          if (!paths.includes(path)) paths.push(path);
+          m.set(idx, paths);
+        }
+        pushMap(m);
+      }
+    });
+    onclearexternaldrop?.();
+  });
 
   // ── mutations ──────────────────────────────────────────────────────────────── //
 
@@ -298,7 +331,27 @@
       </div>
 
       <!-- ── right panel: DB assignment ── -->
-      <div class="db-panel">
+      <div
+        class="db-panel"
+        class:drag-over={isDragOver}
+        ondragover={(e) => { e.preventDefault(); isDragOver = true; }}
+        ondragleave={(e) => {
+          if (!(e.currentTarget as Element).contains(e.relatedTarget as Node)) {
+            isDragOver = false;
+          }
+        }}
+        ondrop={(e) => { e.preventDefault(); isDragOver = false; }}
+      >
+        {#if isDragOver}
+          <div class="drop-overlay" aria-hidden="true">
+            <span class="drop-overlay-hint">Drop .dbc / .arxml</span>
+            {#if selectedList.length === 0}
+              <span class="drop-overlay-sub">Select groups on the left first</span>
+            {:else}
+              <span class="drop-overlay-sub">Assign to {selectedList.length === 1 ? "selected group" : `${selectedList.length} selected groups`}</span>
+            {/if}
+          </div>
+        {/if}
         {#if selectedList.length === 0}
           <div class="panel-label">Select a group to configure</div>
           <p class="empty-hint top-space">
@@ -444,6 +497,41 @@
     gap: 0.5rem;
     min-height: 0;
     min-width: 0; /* allow grid item to shrink below content size */
+  }
+
+  /* right panel needs relative positioning for the drop overlay */
+  .db-panel {
+    position: relative;
+    border-radius: 5px;
+    transition: background 0.1s;
+  }
+  .db-panel.drag-over { background: rgba(200, 131, 42, 0.05); }
+
+  /* ── drop overlay (shown while a file is dragged over the DB panel) ── */
+  .drop-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
+    background: rgba(10, 7, 0, 0.82);
+    border: 2px dashed #c8832a;
+    border-radius: 5px;
+    z-index: 10;
+    pointer-events: none;
+  }
+
+  .drop-overlay-hint {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #e8a838;
+  }
+
+  .drop-overlay-sub {
+    font-size: 0.72rem;
+    color: #8a6020;
   }
 
   .panel-label {

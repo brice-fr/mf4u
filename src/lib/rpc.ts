@@ -12,12 +12,16 @@ export interface Metadata {
   file_name: string;
   file_size: number;
   version: string;
-  /** True when the on-disk file_identification bytes are "MDF     " (finalized). */
-  is_finalized: boolean;
+  /** Tool name from the program_identification field of the IDBLOCK (bytes 16–23). */
+  program_id: string;
+  /** True when the on-disk file_identification bytes are "MDF     " (finalized).
+   *  null for non-MDF source files (BLF, …) where the concept does not apply. */
+  is_finalized: boolean | null;
   /** Raw unfinalized_standard_flags from the IDBLOCK (0 when finalized). */
   unfinalized_flags: number;
-  /** True when all data groups have record_id_len == 0 (sorted/non-interleaved). */
-  is_sorted: boolean;
+  /** True when all data groups have record_id_len == 0 (sorted/non-interleaved).
+   *  null for non-MDF source files (BLF, …) where the concept does not apply. */
+  is_sorted: boolean | null;
   start_time: string | null;
   end_time: string | null;
   duration_s: number | null;
@@ -55,6 +59,7 @@ export interface GroupInfo {
   bus_type: string | null;
   has_phy: boolean;
   compression: string;  // "uncompressed" | "zipped" | "transposed-zipped" | "unknown"
+  cycles_nr: number;    // CG block cycle count — 0 means the group has no records on disk
   channels: ChannelInfo[];
 }
 

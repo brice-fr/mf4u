@@ -61,9 +61,11 @@ jobs:
             --collect-all asammdf \
             --collect-all canmatrix \
             --collect-all pyarrow \
+            --collect-all can \
             --hidden-import metadata \
             --hidden-import stats \
             --hidden-import export \
+            --hidden-import blf \
             __main__.py
 
       - uses: actions/upload-artifact@v7
@@ -101,9 +103,11 @@ jobs:
             --collect-all asammdf \
             --collect-all canmatrix \
             --collect-all pyarrow \
+            --collect-all can \
             --hidden-import metadata \
             --hidden-import stats \
             --hidden-import export \
+            --hidden-import blf \
             __main__.py
           lipo -info dist/mf4u_sidecar   # must report: x86_64
 
@@ -245,6 +249,16 @@ jobs:
 
             ---
 
+            ### What's new in v0.3.0
+
+            #### BLF import
+            Open Vector Binary Logging Format (`.blf`) files directly — no conversion step needed. BLF files are read with python-can and converted to an in-memory MDF4 bus-raw structure, giving them full access to frame decoding, channel filtering, and all export formats. Both classic CAN (8-byte frames) and CAN FD (64-byte frames) are supported. Multi-channel BLF files produce one channel group per bus channel.
+
+            #### DBC drag-and-drop in the frame decoding dialog
+            Drag a `.dbc` or `.arxml` file from Finder / Explorer and drop it onto the right panel of the Frame Decoding dialog to instantly assign it to all currently selected channel groups. The main-window drop handler is suspended while the dialog is open, so drops always land on the dialog.
+
+            ---
+
             ### What's new in v0.2.0
 
             #### Frame decoding
@@ -335,9 +349,11 @@ jobs:
             --collect-all asammdf `
             --collect-all canmatrix `
             --collect-all pyarrow `
+            --collect-all can `
             --hidden-import metadata `
             --hidden-import stats `
             --hidden-import export `
+            --hidden-import blf `
             __main__.py
 
       - name: Copy sidecar to binaries

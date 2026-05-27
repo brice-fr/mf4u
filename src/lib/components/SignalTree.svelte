@@ -6,13 +6,15 @@
   let {
     groups,
     sessionId,
-    showEmptyGroups = true,
-    expanded        = $bindable({} as Record<number, boolean>),
+    showEmptyGroups    = true,
+    showEmptyRecGroups = true,
+    expanded           = $bindable({} as Record<number, boolean>),
   }: {
-    groups:           GroupInfo[];
-    sessionId:        string;
-    showEmptyGroups?: boolean;
-    expanded?:        Record<number, boolean>;
+    groups:               GroupInfo[];
+    sessionId:            string;
+    showEmptyGroups?:     boolean;
+    showEmptyRecGroups?:  boolean;
+    expanded?:            Record<number, boolean>;
   } = $props();
 
   // ── per-channel stats cache  {groupIndex:channelName → ChannelStats | "loading" | string} //
@@ -55,8 +57,9 @@
   // ── filter ────────────────────────────────────────────────────────────── //
   let filterText: string = $state("");
   const filtered = $derived.by(() => {
-    // Start from all groups, optionally hiding empty ones
-    let base = showEmptyGroups ? groups : groups.filter((g) => g.channels.length > 0);
+    // Start from all groups, optionally hiding empty-signal and/or empty-record groups
+    let base = showEmptyGroups    ? groups : groups.filter((g) => g.channels.length > 0);
+    if (!showEmptyRecGroups) base = base.filter((g) => g.cycles_nr > 0);
     // Apply text filter (also removes groups with no matching channels)
     if (filterText.trim()) {
       const q = filterText.toLowerCase();
@@ -94,6 +97,9 @@
           class:comp-hidden={group.compression !== "zipped" && group.compression !== "transposed-zipped"}
           title={group.compression}
         >{group.compression === "transposed-zipped" ? "t-zip" : "zip"}</span>
+        {#if group.cycles_nr === 0}
+          <span class="badge empty-badge" title="No data records in this group">0 recs</span>
+        {/if}
         {#if group.bus_type}
           {@const c = busColor(group.bus_type)}
           <span class="badge bus-label"
@@ -225,6 +231,13 @@
   .badge.phy-badge {
     font-size: 0.65rem; padding: 0.1em 0.45em; border-radius: 3px;
     background: #280d0d; color: #f07575; border: 1px solid #401515;
+    white-space: nowrap; flex-shrink: 0;
+  }
+
+  /* "0 recs" badge — amber, flags groups that have channel definitions but no data */
+  .badge.empty-badge {
+    font-size: 0.65rem; padding: 0.1em 0.45em; border-radius: 3px;
+    background: #1e1608; color: #e8a838; border: 1px solid #3d2e10;
     white-space: nowrap; flex-shrink: 0;
   }
 

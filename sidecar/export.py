@@ -339,7 +339,8 @@ def _do_tdms(mdf: Any, output_path: str, job: _Job,
                                       ignore_invalidation_bits=True)
                     samples = sig.samples
                     if not (hasattr(samples, "dtype")
-                            and np.issubdtype(samples.dtype, np.number)):
+                            and np.issubdtype(samples.dtype, np.number)
+                            and samples.ndim == 1):
                         continue
                     channels.append(ChannelObject(grp_name, name, samples))
                 except Exception:  # noqa: BLE001
@@ -512,8 +513,10 @@ def _do_csv(mdf: Any, output_path: str, job: _Job, delimiter: str = ",",
             try:
                 sig = mdf.get(ch_name, group=i, raw=False,
                               ignore_invalidation_bits=True)
+                # Skip non-numeric channels and 2D arrays (e.g. DataBytes).
                 if not (hasattr(sig.samples, "dtype")
-                        and np.issubdtype(sig.samples.dtype, np.number)):
+                        and np.issubdtype(sig.samples.dtype, np.number)
+                        and sig.samples.ndim == 1):
                     continue
                 if timestamps_arr is None and sig.timestamps is not None:
                     timestamps_arr = sig.timestamps
@@ -608,8 +611,10 @@ def _do_xlsx(mdf: Any, output_path: str, job: _Job,
             try:
                 sig = mdf.get(ch_name, group=i, raw=False,
                               ignore_invalidation_bits=True)
+                # Skip non-numeric channels and 2D arrays (e.g. DataBytes).
                 if not (hasattr(sig.samples, "dtype")
-                        and np.issubdtype(sig.samples.dtype, np.number)):
+                        and np.issubdtype(sig.samples.dtype, np.number)
+                        and sig.samples.ndim == 1):
                     continue
                 if timestamps_arr is None and sig.timestamps is not None:
                     timestamps_arr = sig.timestamps
@@ -782,8 +787,10 @@ def _build_flat_table(
             try:
                 sig = mdf.get(ch_name, group=i, raw=False,
                               ignore_invalidation_bits=True)
+                # Skip non-numeric channels and 2D arrays (e.g. DataBytes).
                 if not (hasattr(sig.samples, "dtype")
-                        and np.issubdtype(sig.samples.dtype, np.number)):
+                        and np.issubdtype(sig.samples.dtype, np.number)
+                        and sig.samples.ndim == 1):
                     continue
                 if ts_arr is None and sig.timestamps is not None:
                     ts_arr = sig.timestamps.astype(np.float64)

@@ -4,4 +4,5 @@ numpy>=1.26.0
 scipy>=1.12.0
 pyarrow>=14.0.0
 openpyxl>=3.1.0
+python-can>=4.0.0
 pytest>=8.0.0

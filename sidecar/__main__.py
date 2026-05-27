@@ -66,7 +66,11 @@ def handle_open_file(req: dict) -> dict:
         return _err(req, 1001, f"import error — is asammdf installed? {exc}")
 
     try:
-        mdf = MDF(path, memory="low")
+        if path.lower().endswith(".blf"):
+            import blf as blf_mod  # noqa: PLC0415
+            mdf = blf_mod.open_blf(path)
+        else:
+            mdf = MDF(path, memory="low")
         session_id = str(uuid.uuid4())
         SESSIONS[session_id] = {"mdf": mdf, "path": path}
         md = meta.extract(mdf, path)
@@ -152,6 +156,7 @@ def handle_get_structure(req: dict) -> dict:
             "bus_type":    bus_type,
             "has_phy":     has_phy,
             "compression": _meta._group_compression_state(mdf, group),
+            "cycles_nr":   int(getattr(cg, "cycles_nr", 0) or 0),
             "channels":    channels_out,
         })
 
