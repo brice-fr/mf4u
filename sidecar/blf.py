@@ -100,6 +100,20 @@ def open_blf(path: str) -> Any:
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(f"Failed to read BLF file {path!r}: {exc}") from exc
 
+    # ── normalise channel numbering to 1-indexed ──────────────────────────────
+    # Some tools (including certain Vector products) write 0-indexed application
+    # channels to BLF files: CAN1 → channel 0, CAN2 → channel 1, etc.
+    # python-can's BLFReader returns those values as-is.  When the minimum
+    # channel seen is 0 we shift every channel up by 1 so that the resulting
+    # MDF4 BusChannel signal uses the 1-indexed convention expected by asammdf's
+    # extract_bus_logging (channel 0 is reserved as the "all-channels" wildcard).
+    if frame_groups:
+        min_ch = min(ch for (ch, _) in frame_groups)
+        if min_ch == 0:
+            frame_groups = {
+                (ch + 1, fd): msgs for (ch, fd), msgs in frame_groups.items()
+            }
+
     # ── determine recording start time and relative-t0 ───────────────────────
     all_msgs = [m for msgs in frame_groups.values() for m in msgs]
     t0 = min((m.timestamp for m in all_msgs), default=0.0)
@@ -192,21 +206,26 @@ def open_blf(path: str) -> Any:
 # --------------------------------------------------------------------------- #
 
 def _normalize_channel(raw: Any) -> int:
-    """Convert a python-can channel value to a positive integer (≥ 1).
+    """Convert a python-can channel value to a non-negative integer (≥ 0).
 
     python-can tools produce various channel representations:
-      int   → use directly (clamp to ≥ 1)
-      None  → default to 1
-      str   → extract trailing digits ("CAN1" → 1, "Channel_2" → 2, "1" → 1)
-              if no digits found, default to 1
+      int   → use directly (clamp to ≥ 0)
+      None  → default to 0
+      str   → extract all digit characters ("CAN1" → 1, "Channel_2" → 2, "1" → 1)
+              if no digits found, default to 0
+
+    Note: callers are responsible for shifting 0-indexed channel sets to 1-indexed
+    after all messages have been collected — see the channel-normalisation step in
+    open_blf().  A raw value of 0 does NOT mean "all channels"; it is a real
+    channel number returned by some loggers for their first channel.
     """
     if raw is None:
-        return 1
+        return 0
     if isinstance(raw, int):
-        return max(1, raw)
+        return max(0, raw)
     s      = str(raw).strip()
     digits = "".join(c for c in s if c.isdigit())
-    return int(digits) if digits else 1
+    return int(digits) if digits else 0
 
 
 def _dir_flag(msg: Any) -> int:

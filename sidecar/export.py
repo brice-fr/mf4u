@@ -1092,20 +1092,56 @@ _BUS_TYPE_TO_EBL_KEY: dict[str, str] = {
 }
 
 
+def _get_group_bus_channel(mdf: Any, group_index: int) -> int:
+    """Return the bus channel number stored in a raw-bus group.
+
+    Reads the first sample of ``CAN_DataFrame.BusChannel`` (or its LIN / FlexRay
+    equivalent via a generic channel name search) so that the correct per-channel
+    entry is passed to ``asammdf.extract_bus_logging``.
+
+    Returns 0 when the channel number cannot be determined.  In asammdf's
+    ``extract_bus_logging`` convention, channel 0 is the "all-channels" wildcard,
+    so falling back to 0 preserves the previous behaviour for files that do not
+    carry an explicit BusChannel signal.
+    """
+    _BUS_CHANNEL_NAMES = (
+        "CAN_DataFrame.BusChannel",
+        "LIN_Frame.BusChannel",
+        "FlexRay_Frame.BusChannel",
+        "Ethernet_Frame.BusChannel",
+    )
+    for ch_name in _BUS_CHANNEL_NAMES:
+        try:
+            sig = mdf.get(
+                ch_name, group=group_index, raw=True,
+                ignore_invalidation_bits=True,
+            )
+            if sig.samples is not None and len(sig.samples) > 0:
+                return int(sig.samples[0])
+        except Exception:  # noqa: BLE001
+            continue
+    return 0
+
+
 def _build_decoded_mdf(mdf: Any, db_assignments: list[dict]) -> Any:
     """Apply ``MDF.extract_bus_logging()`` using the given ordered DB assignments.
 
-    Builds the ``database_files`` dict by mapping each assigned group's bus type
-    to the correct key expected by asammdf.  DB paths for the same bus type are
-    deduplicated (first occurrence wins, preserving priority order).
+    Builds the ``database_files`` dict expected by asammdf — a mapping from bus
+    type key (e.g. ``"CAN"``) to an ordered list of ``(db_path, bus_channel)``
+    tuples.  The bus_channel for each entry is read from the group's
+    ``CAN_DataFrame.BusChannel`` signal so that databases are scoped to the
+    correct physical channel.  Using the actual channel number (rather than the
+    wildcard 0) prevents a DBC assigned to channel 1 from also decoding frames
+    that belong to channel 2 (and vice-versa) when both channels carry the same
+    message IDs with different signal definitions.
 
     Returns the decoded MDF object (a new instance; the original is unmodified).
     """
     import metadata as _meta  # sidecar root is on sys.path at runtime
 
-    # ebl_key → ordered list of unique db_paths
-    ebl_dbs: dict[str, list[str]] = {}
-    seen:    dict[str, set[str]]  = {}
+    # ebl_key → ordered list of (db_path, bus_channel) tuples, deduplicated
+    ebl_dbs: dict[str, list[tuple[str, int]]]  = {}
+    seen:    dict[str, set[tuple[str, int]]]   = {}
 
     for assignment in db_assignments:
         group_index = int(assignment["group_index"])
@@ -1120,22 +1156,25 @@ def _build_decoded_mdf(mdf: Any, db_assignments: list[dict]) -> Any:
         if not ebl_key:
             continue
 
+        # Resolve the bus channel for this group so asammdf can scope the
+        # database to the right physical channel.  Falls back to 0 (wildcard)
+        # when the signal is absent.
+        bus_channel = _get_group_bus_channel(mdf, group_index)
+        entry       = (db_path, bus_channel)
+
         if ebl_key not in ebl_dbs:
             ebl_dbs[ebl_key] = []
             seen[ebl_key]    = set()
 
-        if db_path not in seen[ebl_key]:
-            ebl_dbs[ebl_key].append(db_path)
-            seen[ebl_key].add(db_path)
+        if entry not in seen[ebl_key]:
+            ebl_dbs[ebl_key].append(entry)
+            seen[ebl_key].add(entry)
 
     if not ebl_dbs:
         return mdf
 
     # asammdf expects {"CAN": [(path, bus_channel), ...], ...}
-    database_files = {
-        key: [(path, 0) for path in paths]
-        for key, paths in ebl_dbs.items()
-    }
+    database_files: dict[str, list[tuple[str, int]]] = dict(ebl_dbs)
 
     return mdf.extract_bus_logging(database_files=database_files)
 

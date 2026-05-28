@@ -137,6 +137,32 @@ class TestOpenBlf:
         assert len(mdf.groups) == 2
         mdf.close()
 
+    def test_zero_indexed_channels_shifted_to_one_indexed(self, tmp_path):
+        """BLF files that store channels as 0-based (channel 0, channel 1, …)
+        must produce separate groups with BusChannel values 1 and 2 — not
+        merged into a single group because both 0 and 1 would normalise to 1."""
+        import can
+        import numpy as np
+        blf_path = str(tmp_path / "zero_idx.blf")
+        import time as _time
+        t_base = _time.time()
+        with can.BLFWriter(blf_path) as writer:
+            writer(can.Message(arbitration_id=1, data=b"\x01", channel=0,
+                               timestamp=t_base + 0.0))
+            writer(can.Message(arbitration_id=2, data=b"\x02", channel=1,
+                               timestamp=t_base + 0.01))
+        mdf = blf_mod.open_blf(blf_path)
+        # Must NOT be merged: two groups, not one
+        assert len(mdf.groups) == 2
+        # Both BusChannel values must be ≥ 1 (1-indexed after the shift)
+        for grp_idx in range(len(mdf.groups)):
+            sig = mdf.get("CAN_DataFrame.BusChannel", group=grp_idx, raw=True,
+                          ignore_invalidation_bits=True)
+            assert int(sig.samples[0]) >= 1, (
+                f"group {grp_idx} has BusChannel={sig.samples[0]}, expected ≥ 1"
+            )
+        mdf.close()
+
     def test_canfd_group_has_brs_edl(self, tmp_path):
         import can
         blf_path = str(tmp_path / "fd.blf")
@@ -345,15 +371,20 @@ class TestBlfExport:
 # --------------------------------------------------------------------------- #
 
 class TestNormalizeChannel:
-    def test_none_returns_1(self):
-        assert blf_mod._normalize_channel(None) == 1
+    def test_none_returns_0(self):
+        # None is the raw value for untagged channels; normalised to 0 before
+        # the open_blf() shift step converts 0-indexed files to 1-indexed.
+        assert blf_mod._normalize_channel(None) == 0
 
     def test_int_passthrough(self):
         assert blf_mod._normalize_channel(3) == 3
 
-    def test_int_clamped_to_1(self):
-        assert blf_mod._normalize_channel(0) == 1
-        assert blf_mod._normalize_channel(-5) == 1
+    def test_zero_stays_zero(self):
+        # 0-indexed first channel — shifted to 1 by open_blf(), not here.
+        assert blf_mod._normalize_channel(0) == 0
+
+    def test_negative_clamped_to_0(self):
+        assert blf_mod._normalize_channel(-5) == 0
 
     def test_str_with_number(self):
         assert blf_mod._normalize_channel("CAN1") == 1
@@ -361,7 +392,7 @@ class TestNormalizeChannel:
         assert blf_mod._normalize_channel("3") == 3
 
     def test_str_no_digits(self):
-        assert blf_mod._normalize_channel("CAN") == 1
+        assert blf_mod._normalize_channel("CAN") == 0
 
     def test_str_multiple_numbers_uses_all_digits(self):
         # "CAN12" → digits "12" → 12
