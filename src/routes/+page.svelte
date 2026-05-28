@@ -1,10 +1,10 @@
 <script lang="ts">
-  import { open as openDialog } from "@tauri-apps/plugin-dialog";
+  import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
   import { Menu, Submenu, MenuItem, CheckMenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
   import { onMount } from "svelte";
-  import { openFile, getStructure, closeSession } from "$lib/rpc";
-  import type { Metadata, GroupInfo, DbAssignment, FilteredChannel } from "$lib/rpc";
+  import { openFile, getStructure, closeSession, saveConfig, loadConfig } from "$lib/rpc";
+  import type { Metadata, GroupInfo, DbAssignment, FilteredChannel, AppConfig, ExportFormat } from "$lib/rpc";
   import { loadPrefs, savePrefs } from "$lib/prefs";
   import type { AppPrefs } from "$lib/prefs";
   import MetadataPanel from "$lib/components/MetadataPanel.svelte";
@@ -33,6 +33,19 @@
 
   // ── App-wide preferences (persisted in localStorage) ──────────────────── //
   let prefs: AppPrefs = $state(loadPrefs());
+
+  // ── Configuration save / load ─────────────────────────────────────────── //
+  /** Last export format the user selected; persisted in saved configs. */
+  let lastExportFormat: ExportFormat = $state("tdms");
+  /** Last directory the user exported into; persisted in saved configs. */
+  let lastOutputFolder: string       = $state("");
+  /**
+   * Config that was loaded before a file was open.  Applied automatically
+   * (DBC matching by group name) once the next file finishes loading.
+   */
+  let pendingConfig: AppConfig | null = $state(null);
+  /** Brief toast message ("Saved." / "Loaded." / error) shown for 2 s. */
+  let configToast: string = $state("");
 
   // ── Phase A: frame decoding session config ─────────────────────────────── //
   let decodingConfig: DbAssignment[] = $state([]);
@@ -84,6 +97,8 @@
   let channelFilterMenuItem:  Awaited<ReturnType<typeof MenuItem.new>>      | null = null;
   let flattenCheckItem:       Awaited<ReturnType<typeof CheckMenuItem.new>> | null = null;
   let preferencesMenuItem:    Awaited<ReturnType<typeof MenuItem.new>>      | null = null;
+  let saveConfigMenuItem:     Awaited<ReturnType<typeof MenuItem.new>>      | null = null;
+  let loadConfigMenuItem:     Awaited<ReturnType<typeof MenuItem.new>>      | null = null;
 
   // ── window title ──────────────────────────────────────────────────────── //
   const APP_TITLE = "mf4 utility";
@@ -114,6 +129,11 @@
       groups = struct.groups;
       phase  = "loaded";
       await setWindowTitle(result.metadata.file_name);
+      // Apply any config that was loaded before a file was open.
+      if (pendingConfig) {
+        await applyConfig(pendingConfig);
+        pendingConfig = null;
+      }
     } catch (e) {
       errorMsg = String(e);
       phase    = "error";
@@ -127,6 +147,129 @@
       filters: [{ name: "MF4 / MDF / BLF", extensions: ["mf4", "mdf", "blf"] }],
     });
     if (path) await loadFile(path as string);
+  }
+
+  // ── Config helpers ────────────────────────────────────────────────────── //
+
+  function showToast(msg: string) {
+    configToast = msg;
+    setTimeout(() => { configToast = ""; }, 2500);
+  }
+
+  /**
+   * Build a config snapshot from the current UI state.
+   * channel_filter is stored as bare signal names (without group_index) so it
+   * is portable across structurally similar files.
+   */
+  function buildConfig(): AppConfig {
+    return {
+      version:        1,
+      decoding:       decodingConfig.map(a => ({
+        group_index: a.group_index,
+        group_name:  groups[a.group_index]?.acq_name ?? "",
+        db_path:     a.db_path,
+      })),
+      channel_filter: selectedSignals
+        ? [...new Set(selectedSignals.map(s => s.channel_name))]
+        : null,
+      flatten,
+      export_format:  lastExportFormat,
+      output_folder:  lastOutputFolder,
+      mat_link_groups: prefs.matLinkGroups,
+    };
+  }
+
+  /**
+   * Apply a loaded config to the current state.
+   * - `decoding`: matched by group name, falling back to group index.
+   *   DBC paths that don't exist on disk are silently skipped.
+   * - `channel_filter`: signal names matched across all groups.
+   * - All other fields applied directly.
+   * When called with no file open the decoding and filter parts of the config
+   * are stored as `pendingConfig` for the next file open.
+   */
+  async function applyConfig(cfg: AppConfig) {
+    if (cfg.flatten       !== undefined) flatten          = cfg.flatten;
+    if (cfg.export_format !== undefined) lastExportFormat = cfg.export_format as ExportFormat;
+    if (cfg.output_folder !== undefined) lastOutputFolder = cfg.output_folder;
+    if (cfg.mat_link_groups !== undefined) {
+      prefs = { ...prefs, matLinkGroups: cfg.mat_link_groups };
+      savePrefs(prefs);
+    }
+
+    if (phase !== "loaded" || groups.length === 0) {
+      // Store the structural parts for when a file is opened.
+      pendingConfig = cfg;
+      return;
+    }
+
+    // ── DBC assignments ──────────────────────────────────────────────────── //
+    if (cfg.decoding && cfg.decoding.length > 0) {
+      const newDecoding: DbAssignment[] = [];
+      for (const d of cfg.decoding) {
+        // Try name match first, fall back to index.
+        let idx = groups.findIndex(g => g.acq_name === d.group_name);
+        if (idx === -1 && d.group_index < groups.length) idx = d.group_index;
+        if (idx < 0 || idx >= groups.length) continue;
+        // Avoid duplicate (same group + same db).
+        if (!newDecoding.some(a => a.group_index === idx && a.db_path === d.db_path)) {
+          newDecoding.push({ group_index: idx, db_path: d.db_path });
+        }
+      }
+      decodingConfig   = newDecoding;
+      selectedSignals  = null;  // filter is recomputed below from cfg.channel_filter
+    }
+
+    // ── Channel filter ───────────────────────────────────────────────────── //
+    if (cfg.channel_filter === null) {
+      selectedSignals = null;
+    } else if (cfg.channel_filter && cfg.channel_filter.length > 0) {
+      const nameSet = new Set(cfg.channel_filter);
+      const matched: FilteredChannel[] = [];
+      for (const g of groups) {
+        for (const ch of g.channels) {
+          if (nameSet.has(ch.name)) {
+            matched.push({
+              group_index:  g.index,
+              channel_name: ch.name,
+              acq_name:     g.acq_name,
+              unit:         ch.unit,
+              source:       "physical",
+            });
+          }
+        }
+      }
+      selectedSignals = matched.length > 0 ? matched : null;
+    }
+  }
+
+  async function doSaveConfig() {
+    const path = await saveDialog({
+      filters:     [{ name: "mf4u config", extensions: ["mf4u"] }],
+      defaultPath: "config.mf4u",
+    });
+    if (!path) return;
+    try {
+      await saveConfig(path as string, buildConfig());
+      showToast("Configuration saved.");
+    } catch (e) {
+      showToast(`Save failed: ${e}`);
+    }
+  }
+
+  async function doLoadConfig() {
+    const path = await openDialog({
+      multiple: false,
+      filters: [{ name: "mf4u config", extensions: ["mf4u"] }],
+    });
+    if (!path) return;
+    try {
+      const cfg = await loadConfig(path as string);
+      await applyConfig(cfg);
+      showToast(phase === "loaded" ? "Configuration applied." : "Configuration loaded — will apply on next file open.");
+    } catch (e) {
+      showToast(`Load failed: ${e}`);
+    }
   }
 
   // ── OS menus ──────────────────────────────────────────────────────────── //
@@ -202,6 +345,20 @@
         action: () => { showPreferences = true; },
       });
 
+      saveConfigMenuItem = await MenuItem.new({
+        id: "save_config",
+        text: "Save configuration…",
+        accelerator: "CmdOrCtrl+Shift+S",
+        action: doSaveConfig,
+      });
+
+      loadConfigMenuItem = await MenuItem.new({
+        id: "load_config",
+        text: "Load configuration…",
+        accelerator: "CmdOrCtrl+Shift+O",
+        action: doLoadConfig,
+      });
+
       const menu = await Menu.new({
         items: [
           // ① App menu — macOS system menu
@@ -232,6 +389,9 @@
                 accelerator: "CmdOrCtrl+O",
                 action: pickFile,
               }),
+              await PredefinedMenuItem.new({ item: "Separator" }),
+              saveConfigMenuItem,
+              loadConfigMenuItem,
               await PredefinedMenuItem.new({ item: "Separator" }),
               await PredefinedMenuItem.new({ item: "CloseWindow" }),
             ],
@@ -289,6 +449,10 @@
       matLinkGroups={prefs.matLinkGroups}
       signalFilter={selectedSignals}
       totalSignals={totalPhysicalSignals}
+      initialFormat={lastExportFormat}
+      initialFolder={lastOutputFolder}
+      onfmtchange={(fmt) => { lastExportFormat = fmt; }}
+      onfolderchange={(folder) => { lastOutputFolder = folder; }}
       onclose={() => (showExport = false)}
     />
   {/if}
@@ -361,6 +525,11 @@
           {showEmptyGroups} {showEmptyRecGroups} bind:expanded={treeExpanded} />
       </div>
     </div>
+  {/if}
+
+  <!-- ── config toast ── -->
+  {#if configToast}
+    <div class="config-toast" role="status" aria-live="polite">{configToast}</div>
   {/if}
 
   <!-- ── status bar (only when loaded) ── -->
@@ -521,4 +690,21 @@
     transition: color 0.12s;
   }
   .status-link:hover { color: #6c9ef8; text-decoration: underline; }
+
+  /* ── config toast ── */
+  .config-toast {
+    position: fixed;
+    bottom: 2.4rem;   /* just above the status bar */
+    left: 50%;
+    transform: translateX(-50%);
+    background: #2a2a2a;
+    border: 1px solid #444;
+    border-radius: 6px;
+    padding: 0.35rem 0.9rem;
+    font-size: 12px;
+    color: #c8c8c8;
+    pointer-events: none;
+    white-space: nowrap;
+    z-index: 9999;
+  }
 </style>

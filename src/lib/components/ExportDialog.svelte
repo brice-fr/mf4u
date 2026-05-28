@@ -1,7 +1,9 @@
 <script lang="ts">
   import { save as saveDialog } from "@tauri-apps/plugin-dialog";
   import { startExport, getExportProgress, cancelExport } from "$lib/rpc";
-  import type { ExportJob, DbAssignment, FilteredChannel } from "$lib/rpc";
+  import type { ExportJob, DbAssignment, FilteredChannel, ExportFormat } from "$lib/rpc";
+
+  type Fmt = ExportFormat;
 
   let {
     sessionId,
@@ -11,7 +13,11 @@
     matLinkGroups   = false,
     signalFilter    = null,
     totalSignals    = 0,
+    initialFormat   = "tdms" as Fmt,
+    initialFolder   = "",
     onclose,
+    onfmtchange,
+    onfolderchange,
   }: {
     sessionId:       string;
     fileName?:       string;
@@ -20,7 +26,15 @@
     matLinkGroups?:  boolean;
     signalFilter?:   FilteredChannel[] | null;
     totalSignals?:   number;
+    /** Format to pre-select when the dialog opens (from a loaded config). */
+    initialFormat?:  Fmt;
+    /** Directory to use as the base for the save-file dialog default path. */
+    initialFolder?:  string;
     onclose:         () => void;
+    /** Called whenever the user changes the format selection. */
+    onfmtchange?:    (fmt: Fmt) => void;
+    /** Called whenever the user picks an output path; receives the directory part. */
+    onfolderchange?: (folder: string) => void;
   } = $props();
 
   /** Strip any extension from the source file name to use as the export stem. */
@@ -29,9 +43,8 @@
     return base || "export";
   }
 
-  type Fmt = "tdms" | "mat" | "parquet" | "csv" | "tsv" | "xlsx" | "mf4";
-  let format = $state<Fmt>("tdms");
-  let outputPath        = $state("");
+  let format     = $state<Fmt>(initialFormat);
+  let outputPath = $state("");
   let jobId = $state(null as string | null);
   let job   = $state(null as ExportJob | null);
   let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -65,11 +78,23 @@
 
   async function browse() {
     const { ext, label } = FMT_META[format];
+    const stem = exportStem();
+    // Prefer the saved folder (from a loaded config or a previous export in this
+    // session) as the default directory so the dialog opens in the right place.
+    const defaultPath = initialFolder
+      ? `${initialFolder}/${stem}.${ext}`.replace(/\\/g, "/")
+      : `${stem}.${ext}`;
     const path = await saveDialog({
-      defaultPath: `${exportStem()}.${ext}`,
+      defaultPath,
       filters: [{ name: label, extensions: [ext] }],
     });
-    if (path) outputPath = path as string;
+    if (path) {
+      outputPath = path as string;
+      // Notify parent of the chosen directory so it can persist it in the config.
+      const sep    = outputPath.includes("\\") ? "\\" : "/";
+      const folder = outputPath.substring(0, outputPath.lastIndexOf(sep));
+      if (folder) onfolderchange?.(folder);
+    }
   }
 
   // Derived active-settings values
@@ -128,12 +153,13 @@
     onclose();
   }
 
-  // When user switches format, clear any stale output path
+  // When user switches format, clear any stale output path and notify parent.
   function switchFormat(f: Fmt) {
     format = f;
     outputPath = "";
     jobId = null;
     job   = null;
+    onfmtchange?.(f);
   }
 
   const pct        = $derived(job && job.total > 0 ? Math.round((job.done / job.total) * 100) : 0);

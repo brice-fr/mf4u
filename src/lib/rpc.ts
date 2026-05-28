@@ -76,6 +76,8 @@ export interface ChannelStats {
   last_t?: number;
 }
 
+export type ExportFormat = "tdms" | "mat" | "parquet" | "csv" | "tsv" | "xlsx" | "mf4";
+
 export type ExportStatus = "running" | "done" | "error" | "cancelled" | "not_found";
 
 export interface ExportJob {
@@ -103,6 +105,39 @@ export interface BusDecodingPreview {
 
 export interface PreviewBusDecodingResult {
   previews: BusDecodingPreview[];
+}
+
+// ── App configuration (save / load) ───────────────────────────────────────── //
+
+/**
+ * Persisted application configuration.
+ *
+ * A config file captures the current export pipeline settings so that the same
+ * pipeline can be applied to a different (but structurally similar) file later.
+ *
+ * Decoding entries use `group_name` as the primary key when re-applying to a
+ * new file, falling back to `group_index` when the name is not found.
+ * `channel_filter` stores bare signal names; when re-applied they are matched
+ * by name across all groups in the new file.
+ */
+export interface AppConfig {
+  /** Schema version — currently always 1. */
+  version: 1;
+  decoding: Array<{
+    /** Channel group index in the file this config was saved from. */
+    group_index: number;
+    /** Acquisition name of the group — used for matching when the file changes. */
+    group_name: string;
+    /** Absolute path to the .dbc or .arxml database. */
+    db_path: string;
+  }>;
+  /** Signal names to include in the export; null = no filter (export all). */
+  channel_filter: string[] | null;
+  flatten: boolean;
+  export_format: ExportFormat;
+  /** Last directory used for export; empty string = none saved. */
+  output_folder: string;
+  mat_link_groups: boolean;
 }
 
 // ── Phase B: channel filter ────────────────────────────────────────────────── //
@@ -164,7 +199,7 @@ export async function closeSession(sessionId: string): Promise<void> {
 
 export async function startExport(
   sessionId: string,
-  format: "mat" | "tdms" | "parquet" | "csv" | "tsv" | "xlsx" | "mf4",
+  format: ExportFormat,
   outputPath: string,
   dbAssignments?: DbAssignment[],
   flatten?: boolean,
@@ -209,6 +244,15 @@ export async function getExportProgress(jobId: string): Promise<ExportJob> {
 
 export async function cancelExport(jobId: string): Promise<void> {
   await invoke("cancel_export", { jobId });
+}
+
+export async function saveConfig(path: string, config: AppConfig): Promise<void> {
+  await invoke("save_config", { path, config });
+}
+
+export async function loadConfig(path: string): Promise<AppConfig> {
+  const r = await invoke<{ config: AppConfig }>("load_config", { path });
+  return r.config;
 }
 
 // -------------------------------------------------------------------------- //

@@ -319,6 +319,35 @@ def handle_cancel_export(req: dict) -> dict:
         return _err(req, 1001, str(exc))
 
 
+def handle_save_config(req: dict) -> dict:
+    """Write an application config dict as formatted JSON to *params.path*."""
+    params    = req.get("params", {})
+    file_path = str(params.get("path", "")).strip()
+    config    = params.get("config")
+    if not file_path:
+        return _err(req, 1010, "params.path is required")
+    try:
+        with open(file_path, "w", encoding="utf-8") as fh:
+            json.dump(config, fh, indent=2, ensure_ascii=False)
+        return _ok(req, {})
+    except OSError as exc:
+        return _err(req, 1011, f"Failed to write config: {exc}")
+
+
+def handle_load_config(req: dict) -> dict:
+    """Read a JSON config file from *params.path* and return its contents."""
+    params    = req.get("params", {})
+    file_path = str(params.get("path", "")).strip()
+    if not file_path:
+        return _err(req, 1010, "params.path is required")
+    try:
+        with open(file_path, encoding="utf-8") as fh:
+            config = json.load(fh)
+        return _ok(req, {"config": config})
+    except (OSError, json.JSONDecodeError) as exc:
+        return _err(req, 1011, f"Failed to read config: {exc}")
+
+
 HANDLERS: dict[str, Any] = {
     "ping":                      handle_ping,
     "open_file":                 handle_open_file,
@@ -331,6 +360,8 @@ HANDLERS: dict[str, Any] = {
     "preview_bus_decoding":      handle_preview_bus_decoding,
     "get_exportable_signals":    handle_get_exportable_signals,
     "debug_bus_detection":       handle_debug_bus_detection,
+    "save_config":               handle_save_config,
+    "load_config":               handle_load_config,
 }
 
 
