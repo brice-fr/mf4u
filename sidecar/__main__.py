@@ -319,33 +319,103 @@ def handle_cancel_export(req: dict) -> dict:
         return _err(req, 1001, str(exc))
 
 
+def _to_relative(abs_path: str, base_dir: str) -> str:
+    """Return *abs_path* as a path relative to *base_dir*.
+
+    Falls back to the original path when ``os.path.relpath`` raises
+    ``ValueError`` (e.g. paths on different Windows drives).
+    Forward slashes are used as the separator so the result is readable on
+    all platforms when embedded in a JSON file.
+    """
+    try:
+        rel = os.path.relpath(abs_path, base_dir)
+        return rel.replace("\\", "/")
+    except ValueError:
+        return abs_path.replace("\\", "/")
+
+
+def _to_absolute(rel_or_abs: str, base_dir: str) -> str:
+    """Return the absolute form of *rel_or_abs* resolved against *base_dir*.
+
+    Absolute paths are returned unchanged (after normalisation).
+    """
+    if os.path.isabs(rel_or_abs):
+        return os.path.normpath(rel_or_abs)
+    return os.path.normpath(os.path.join(base_dir, rel_or_abs))
+
+
 def handle_save_config(req: dict) -> dict:
-    """Write an application config dict as formatted JSON to *params.path*."""
+    """Write an application config dict as formatted JSON to *params.path*.
+
+    DBC paths (``decoding[].db_path``) and the ``output_folder`` are stored as
+    paths relative to the config file's directory so the config is portable
+    when the project folder is moved or shared.  Paths on a different Windows
+    drive than the config file are kept absolute.
+    """
+    import copy
+
     params    = req.get("params", {})
     file_path = str(params.get("path", "")).strip()
     config    = params.get("config")
     if not file_path:
         return _err(req, 1010, "params.path is required")
+
+    config_dir = os.path.dirname(os.path.abspath(file_path))
+
+    # Work on a deep copy so we never mutate the caller's object.
+    cfg = copy.deepcopy(config) if config else {}
+
+    # Relativise DBC / ARXML database paths.
+    for entry in cfg.get("decoding", []):
+        raw = str(entry.get("db_path") or "").strip()
+        if raw:
+            entry["db_path"] = _to_relative(raw, config_dir)
+
+    # Relativise the export output folder.
+    raw_folder = str(cfg.get("output_folder") or "").strip()
+    if raw_folder:
+        cfg["output_folder"] = _to_relative(raw_folder, config_dir)
+
     try:
         with open(file_path, "w", encoding="utf-8") as fh:
-            json.dump(config, fh, indent=2, ensure_ascii=False)
+            json.dump(cfg, fh, indent=2, ensure_ascii=False)
         return _ok(req, {})
     except OSError as exc:
         return _err(req, 1011, f"Failed to write config: {exc}")
 
 
 def handle_load_config(req: dict) -> dict:
-    """Read a JSON config file from *params.path* and return its contents."""
+    """Read a JSON config file from *params.path* and return its contents.
+
+    Relative ``decoding[].db_path`` values and ``output_folder`` are resolved
+    to absolute paths against the config file's directory before returning,
+    so the rest of the application always works with absolute paths.
+    """
     params    = req.get("params", {})
     file_path = str(params.get("path", "")).strip()
     if not file_path:
         return _err(req, 1010, "params.path is required")
+
+    config_dir = os.path.dirname(os.path.abspath(file_path))
+
     try:
         with open(file_path, encoding="utf-8") as fh:
             config = json.load(fh)
-        return _ok(req, {"config": config})
     except (OSError, json.JSONDecodeError) as exc:
         return _err(req, 1011, f"Failed to read config: {exc}")
+
+    # Resolve relative DBC / ARXML paths back to absolute.
+    for entry in config.get("decoding", []):
+        raw = str(entry.get("db_path") or "").strip()
+        if raw:
+            entry["db_path"] = _to_absolute(raw, config_dir)
+
+    # Resolve relative output folder back to absolute.
+    raw_folder = str(config.get("output_folder") or "").strip()
+    if raw_folder:
+        config["output_folder"] = _to_absolute(raw_folder, config_dir)
+
+    return _ok(req, {"config": config})
 
 
 HANDLERS: dict[str, Any] = {
