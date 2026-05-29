@@ -249,6 +249,17 @@ jobs:
 
             ---
 
+            ### What's new in v0.3.1
+
+            #### Configuration save/load
+            Save the current pipeline settings (DBC assignments, channel filter, flatten toggle, export format, output folder) to a portable `.mf4u` config file and reload them later to re-apply the same pipeline to a different file without manual reconfiguration. When saving, choose how DBC paths are stored: relative to the config file (portable), absolute (machine-local), or copy DBC files into the config folder (fully self-contained). Load/save buttons are available in the toolbar and under the File menu.
+
+            #### Bug fixes
+            - BLF import: CAN channels were incorrectly merged when the source tool used 0-indexed channel numbers. The importer now detects 0-indexed sets and shifts them to 1-indexed to match the MDF4 convention.
+            - Bus decoding: each channel group now decodes with its actual bus channel number instead of the wildcard (0), so the correct DBC is applied to each channel.
+
+            ---
+
             ### What's new in v0.3.0
 
             #### BLF import

@@ -246,8 +246,15 @@ export async function cancelExport(jobId: string): Promise<void> {
   await invoke("cancel_export", { jobId });
 }
 
-export async function saveConfig(path: string, config: AppConfig): Promise<void> {
-  await invoke("save_config", { path, config });
+/** How DBC / ARXML file paths are stored in a saved config. */
+export type DbcPathMode = "absolute" | "relative" | "copy";
+
+export async function saveConfig(
+  path: string,
+  config: AppConfig,
+  dbcPathMode: DbcPathMode = "relative",
+): Promise<void> {
+  await invoke("save_config", { path, config, dbcPathMode });
 }
 
 export async function loadConfig(path: string): Promise<AppConfig> {

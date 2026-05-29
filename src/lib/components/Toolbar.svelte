@@ -14,6 +14,8 @@
     onchannelfilter   = () => {},
     onflattentoggle   = () => {},
     onpreferences     = () => {},
+    onsaveconfig      = () => {},
+    onloadconfig      = () => {},
   }: {
     loading?:           boolean;
     hasFile?:           boolean;
@@ -29,6 +31,8 @@
     onchannelfilter?:   () => void;
     onflattentoggle?:   () => void;
     onpreferences?:     () => void;
+    onsaveconfig?:      () => void;
+    onloadconfig?:      () => void;
   } = $props();
 </script>
 
@@ -60,6 +64,69 @@
       </svg>
     {/if}
   </button>
+
+  <!-- ── config load / save ── -->
+  <div class="divider"></div>
+
+  <!-- Load config: gear + up arrow (matches "open" direction) -->
+  <button
+    class="icon-btn"
+    onclick={onloadconfig}
+    title="Load configuration… (⌘⇧O)"
+    aria-label="Load configuration"
+  >
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+         fill="none" stroke="currentColor" stroke-width="1.8"
+         stroke-linecap="round" stroke-linejoin="round">
+      <!-- Gear scaled to 65 % (upper-left area); stroke compensated to keep visual weight -->
+      <g transform="scale(0.65)" stroke-width="2.77">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06
+                 a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09
+                 A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83
+                 l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09
+                 A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83
+                 l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09
+                 a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83
+                 l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09
+                 a1.65 1.65 0 0 0-1.51 1z"/>
+      </g>
+      <!-- Up arrow — lower-right corner -->
+      <line x1="19" y1="22" x2="19" y2="15"/>
+      <polyline points="16 18 19 15 22 18"/>
+    </svg>
+  </button>
+
+  <!-- Save config: gear + down arrow (matches "export" direction) -->
+  <button
+    class="icon-btn"
+    onclick={onsaveconfig}
+    title="Save configuration… (⌘⇧S)"
+    aria-label="Save configuration"
+  >
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+         fill="none" stroke="currentColor" stroke-width="1.8"
+         stroke-linecap="round" stroke-linejoin="round">
+      <!-- Same gear -->
+      <g transform="scale(0.65)" stroke-width="2.77">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06
+                 a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09
+                 A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83
+                 l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09
+                 A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83
+                 l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09
+                 a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83
+                 l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09
+                 a1.65 1.65 0 0 0-1.51 1z"/>
+      </g>
+      <!-- Down arrow — lower-right corner -->
+      <line x1="19" y1="15" x2="19" y2="22"/>
+      <polyline points="16 19 19 22 22 19"/>
+    </svg>
+  </button>
+
+  <div class="divider"></div>
 
   <!-- Frame decoding -->
   <div class="icon-btn-wrap">
@@ -231,7 +298,15 @@
     white-space: nowrap;
   }
 
-  .spacer { flex: 1; }
+  .spacer  { flex: 1; }
+
+  .divider {
+    width: 1px;
+    height: 18px;
+    background: #2e2e2e;
+    flex-shrink: 0;
+    margin: 0 2px;
+  }
 
   .spin { animation: spin 0.8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }

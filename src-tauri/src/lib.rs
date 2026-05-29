@@ -188,9 +188,19 @@ async fn cancel_export(
 async fn save_config(
     path: String,
     config: Value,
+    dbc_path_mode: Option<String>,
     sidecar: tauri::State<'_, Mutex<Sidecar>>,
 ) -> Result<Value, String> {
-    rpc_call(&sidecar, "save_config", json!({ "path": path, "config": config })).await
+    rpc_call(
+        &sidecar,
+        "save_config",
+        json!({
+            "path":          path,
+            "config":        config,
+            "dbc_path_mode": dbc_path_mode.unwrap_or_else(|| "relative".to_string()),
+        }),
+    )
+    .await
 }
 
 #[tauri::command]

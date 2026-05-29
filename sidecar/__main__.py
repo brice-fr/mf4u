@@ -344,34 +344,95 @@ def _to_absolute(rel_or_abs: str, base_dir: str) -> str:
     return os.path.normpath(os.path.join(base_dir, rel_or_abs))
 
 
+def _copy_dbc_to_dir(dbc_abs: str, dest_dir: str) -> str:
+    """Copy *dbc_abs* into *dest_dir* and return the resulting filename.
+
+    If the source file is already inside *dest_dir* no copy is made and the
+    bare filename is returned.  Name collisions are resolved by appending
+    ``_1``, ``_2``, … before the extension.  When the source file does not
+    exist the function falls back to a plain relative path without copying.
+    """
+    import shutil
+
+    if not os.path.isfile(dbc_abs):
+        # Cannot copy a non-existent file — store a relative path instead.
+        return _to_relative(dbc_abs, dest_dir)
+
+    filename = os.path.basename(dbc_abs)
+    dest     = os.path.join(dest_dir, filename)
+
+    # Already the same file?
+    try:
+        if os.path.exists(dest) and os.path.samefile(dbc_abs, dest):
+            return filename
+    except (OSError, ValueError):
+        pass
+
+    # Resolve filename collision.
+    if os.path.exists(dest):
+        stem, ext = os.path.splitext(filename)
+        i = 1
+        while os.path.exists(os.path.join(dest_dir, f"{stem}_{i}{ext}")):
+            i += 1
+        filename = f"{stem}_{i}{ext}"
+        dest = os.path.join(dest_dir, filename)
+
+    os.makedirs(dest_dir, exist_ok=True)
+    shutil.copy2(dbc_abs, dest)
+    return filename
+
+
 def handle_save_config(req: dict) -> dict:
     """Write an application config dict as formatted JSON to *params.path*.
 
-    DBC paths (``decoding[].db_path``) and the ``output_folder`` are stored as
-    paths relative to the config file's directory so the config is portable
-    when the project folder is moved or shared.  Paths on a different Windows
-    drive than the config file are kept absolute.
+    ``params.dbc_path_mode`` controls how DBC / ARXML paths are stored:
+
+    ``"relative"`` (default)
+        Paths relative to the config file's directory.  Portable when the
+        config and DBC files are moved together.
+
+    ``"absolute"``
+        Full absolute paths.  Works only on the current machine with files
+        in their present locations.
+
+    ``"copy"``
+        Each DBC file is copied into the same directory as the config file
+        and referenced by its bare filename (a relative path).  The config
+        folder becomes fully self-contained.  If the source file does not
+        exist the path falls back to a relative reference without copying.
+
+    The ``output_folder`` is always stored as a relative path (or absolute
+    when on a different Windows drive than the config file).
     """
     import copy
 
-    params    = req.get("params", {})
-    file_path = str(params.get("path", "")).strip()
-    config    = params.get("config")
+    params        = req.get("params", {})
+    file_path     = str(params.get("path", "")).strip()
+    config        = params.get("config")
+    dbc_path_mode = str(params.get("dbc_path_mode", "relative")).strip()
     if not file_path:
         return _err(req, 1010, "params.path is required")
+    if dbc_path_mode not in ("absolute", "relative", "copy"):
+        dbc_path_mode = "relative"
 
     config_dir = os.path.dirname(os.path.abspath(file_path))
 
     # Work on a deep copy so we never mutate the caller's object.
     cfg = copy.deepcopy(config) if config else {}
 
-    # Relativise DBC / ARXML database paths.
+    # Apply the chosen DBC path strategy.
     for entry in cfg.get("decoding", []):
         raw = str(entry.get("db_path") or "").strip()
-        if raw:
+        if not raw:
+            continue
+        if dbc_path_mode == "absolute":
+            entry["db_path"] = os.path.normpath(raw).replace("\\", "/")
+        elif dbc_path_mode == "copy":
+            entry["db_path"] = _copy_dbc_to_dir(raw, config_dir)
+        else:  # "relative"
             entry["db_path"] = _to_relative(raw, config_dir)
 
-    # Relativise the export output folder.
+    # output_folder is always relativised (portable by default).
     raw_folder = str(cfg.get("output_folder") or "").strip()
     if raw_folder:
         cfg["output_folder"] = _to_relative(raw_folder, config_dir)

@@ -1,10 +1,10 @@
 <script lang="ts">
-  import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+  import { open as openDialog } from "@tauri-apps/plugin-dialog";
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
   import { Menu, Submenu, MenuItem, CheckMenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
   import { onMount } from "svelte";
   import { openFile, getStructure, closeSession, saveConfig, loadConfig } from "$lib/rpc";
-  import type { Metadata, GroupInfo, DbAssignment, FilteredChannel, AppConfig, ExportFormat } from "$lib/rpc";
+  import type { Metadata, GroupInfo, DbAssignment, FilteredChannel, AppConfig, ExportFormat, DbcPathMode } from "$lib/rpc";
   import { loadPrefs, savePrefs } from "$lib/prefs";
   import type { AppPrefs } from "$lib/prefs";
   import MetadataPanel from "$lib/components/MetadataPanel.svelte";
@@ -14,6 +14,7 @@
   import ChannelFilterDialog from "$lib/components/ChannelFilterDialog.svelte";
   import PreferencesDialog from "$lib/components/PreferencesDialog.svelte";
   import AboutDialog from "$lib/components/AboutDialog.svelte";
+  import SaveConfigDialog from "$lib/components/SaveConfigDialog.svelte";
   import Toolbar from "$lib/components/Toolbar.svelte";
 
   // ── state ─────────────────────────────────────────────────────────────── //
@@ -29,6 +30,7 @@
   let showFrameDecoding: boolean  = $state(false);
   let showChannelFilter: boolean  = $state(false);
   let showPreferences:   boolean  = $state(false);
+  let showSaveConfig:    boolean  = $state(false);
   let flatten:           boolean  = $state(false);
 
   // ── App-wide preferences (persisted in localStorage) ──────────────────── //
@@ -243,14 +245,14 @@
     }
   }
 
-  async function doSaveConfig() {
-    const path = await saveDialog({
-      filters:     [{ name: "mf4u config", extensions: ["mf4u"] }],
-      defaultPath: "config.mf4u",
-    });
-    if (!path) return;
+  function doSaveConfig() {
+    showSaveConfig = true;
+  }
+
+  async function handleSaveConfig(path: string, mode: DbcPathMode) {
+    showSaveConfig = false;
     try {
-      await saveConfig(path as string, buildConfig());
+      await saveConfig(path, buildConfig(), mode);
       showToast("Configuration saved.");
     } catch (e) {
       showToast(`Save failed: ${e}`);
@@ -432,6 +434,13 @@
     <AboutDialog open={showAbout} onclose={() => (showAbout = false)} />
   {/if}
 
+  {#if showSaveConfig}
+    <SaveConfigDialog
+      onconfirm={handleSaveConfig}
+      oncancel={() => { showSaveConfig = false; }}
+    />
+  {/if}
+
   {#if showPreferences}
     <PreferencesDialog
       {prefs}
@@ -491,6 +500,8 @@
     {filterCount}
     {flatten}
     onopen={pickFile}
+    onsaveconfig={doSaveConfig}
+    onloadconfig={doLoadConfig}
     onexport={() => { if (sessionId) showExport = true; }}
     onframedecoding={() => { if (sessionId) showFrameDecoding = true; }}
     onchannelfilter={() => { if (sessionId) showChannelFilter = true; }}
