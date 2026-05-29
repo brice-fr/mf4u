@@ -184,6 +184,23 @@ async fn cancel_export(
     rpc_call(&sidecar, "cancel_export", json!({ "job_id": job_id })).await
 }
 
+#[tauri::command]
+async fn save_config(
+    path: String,
+    config: Value,
+    sidecar: tauri::State<'_, Mutex<Sidecar>>,
+) -> Result<Value, String> {
+    rpc_call(&sidecar, "save_config", json!({ "path": path, "config": config })).await
+}
+
+#[tauri::command]
+async fn load_config(
+    path: String,
+    sidecar: tauri::State<'_, Mutex<Sidecar>>,
+) -> Result<Value, String> {
+    rpc_call(&sidecar, "load_config", json!({ "path": path })).await
+}
+
 // -------------------------------------------------------------------------- //
 // App entry point
 // -------------------------------------------------------------------------- //
@@ -213,6 +230,8 @@ pub fn run() {
             cancel_export,
             preview_bus_decoding,
             get_exportable_signals,
+            save_config,
+            load_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
