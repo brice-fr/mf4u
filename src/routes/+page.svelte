@@ -3,7 +3,7 @@
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
   import { Menu, Submenu, MenuItem, CheckMenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
   import { onMount } from "svelte";
-  import { openFile, getStructure, closeSession, saveConfig, loadConfig, checkCopyConflicts } from "$lib/rpc";
+  import { openFile, getStructure, closeSession, saveConfig, loadConfig, checkCopyConflicts, getExportableSignals } from "$lib/rpc";
   import type { Metadata, GroupInfo, DbAssignment, FilteredChannel, AppConfig, ExportFormat, DbcPathMode, CopyConflict, CopyResolution } from "$lib/rpc";
   import { loadPrefs, savePrefs } from "$lib/prefs";
   import type { AppPrefs } from "$lib/prefs";
@@ -249,19 +249,59 @@
     } else if (cfg.channel_filter && cfg.channel_filter.length > 0) {
       const nameSet = new Set(cfg.channel_filter);
       const matched: FilteredChannel[] = [];
-      for (const g of groups) {
-        for (const ch of g.channels) {
-          if (nameSet.has(ch.name)) {
-            matched.push({
-              group_index:  g.index,
-              channel_name: ch.name,
-              acq_name:     g.acq_name,
-              unit:         ch.unit,
-              source:       "physical",
-            });
+
+      if (decodingConfig.length > 0 && sessionId) {
+        // Decoding assignments are active: trigger an internal preview via
+        // getExportableSignals so that decoded signal names (which don't
+        // appear in the raw file structure) are available for matching.
+        try {
+          const exportable = await getExportableSignals(sessionId, decodingConfig);
+          for (const grp of exportable.groups) {
+            for (const ch of grp.channels) {
+              if (nameSet.has(ch.name)) {
+                matched.push({
+                  group_index:  grp.group_index,
+                  channel_name: ch.name,
+                  acq_name:     grp.acq_name,
+                  unit:         ch.unit,
+                  source:       grp.source,
+                });
+              }
+            }
+          }
+        } catch {
+          // RPC failed — fall back to matching raw groups only
+          for (const g of groups) {
+            for (const ch of g.channels) {
+              if (nameSet.has(ch.name)) {
+                matched.push({
+                  group_index:  g.index,
+                  channel_name: ch.name,
+                  acq_name:     g.acq_name,
+                  unit:         ch.unit,
+                  source:       "physical",
+                });
+              }
+            }
+          }
+        }
+      } else {
+        // No decoding — match against raw groups only
+        for (const g of groups) {
+          for (const ch of g.channels) {
+            if (nameSet.has(ch.name)) {
+              matched.push({
+                group_index:  g.index,
+                channel_name: ch.name,
+                acq_name:     g.acq_name,
+                unit:         ch.unit,
+                source:       "physical",
+              });
+            }
           }
         }
       }
+
       selectedSignals = matched.length > 0 ? matched : null;
     }
   }
