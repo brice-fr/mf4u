@@ -4,7 +4,7 @@
   import { Menu, Submenu, MenuItem, CheckMenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
   import { onMount } from "svelte";
   import { openFile, getStructure, closeSession, saveConfig, loadConfig, checkCopyConflicts, getExportableSignals } from "$lib/rpc";
-  import type { Metadata, GroupInfo, DbAssignment, FilteredChannel, AppConfig, ExportFormat, DbcPathMode, CopyConflict, CopyResolution } from "$lib/rpc";
+  import type { Metadata, GroupInfo, DbAssignment, FilteredChannel, AppConfig, ChannelFilterEntry, ExportFormat, DbcPathMode, CopyConflict, CopyResolution } from "$lib/rpc";
   import { loadPrefs, savePrefs } from "$lib/prefs";
   import type { AppPrefs } from "$lib/prefs";
   import MetadataPanel from "$lib/components/MetadataPanel.svelte";
@@ -177,7 +177,10 @@
         db_path:     a.db_path,
       })),
       channel_filter: selectedSignals
-        ? [...new Set(selectedSignals.map(s => s.channel_name))]
+        ? selectedSignals.map(s => ({
+            group_name:   s.acq_name,
+            channel_name: s.channel_name,
+          }))
         : null,
       flatten,
       export_format:  lastExportFormat,
@@ -247,18 +250,30 @@
     if (cfg.channel_filter === null) {
       selectedSignals = null;
     } else if (cfg.channel_filter && cfg.channel_filter.length > 0) {
-      const nameSet = new Set(cfg.channel_filter);
+      // Normalise entries: new format = {group_name, channel_name}; legacy
+      // format = plain strings (name-only → matched against any group).
+      const entries = (cfg.channel_filter as unknown as Array<string | ChannelFilterEntry>)
+        .map(e => typeof e === "string"
+          ? { group_name: null as string | null, channel_name: e }
+          : { group_name: e.group_name ?? null, channel_name: e.channel_name });
+
+      /** True when the (acqName, chName) pair satisfies any filter entry. */
+      const matches = (acqName: string, chName: string) =>
+        entries.some(e =>
+          e.channel_name === chName &&
+          (e.group_name == null || e.group_name === acqName)
+        );
+
       const matched: FilteredChannel[] = [];
 
       if (decodingConfig.length > 0 && sessionId) {
-        // Decoding assignments are active: trigger an internal preview via
-        // getExportableSignals so that decoded signal names (which don't
-        // appear in the raw file structure) are available for matching.
+        // Decoding active — preview decoded signals so their names/groups are
+        // available for matching (they don't appear in the raw file structure).
         try {
           const exportable = await getExportableSignals(sessionId, decodingConfig);
           for (const grp of exportable.groups) {
             for (const ch of grp.channels) {
-              if (nameSet.has(ch.name)) {
+              if (matches(grp.acq_name, ch.name)) {
                 matched.push({
                   group_index:  grp.group_index,
                   channel_name: ch.name,
@@ -270,10 +285,10 @@
             }
           }
         } catch {
-          // RPC failed — fall back to matching raw groups only
+          // RPC failed — fall back to raw groups only
           for (const g of groups) {
             for (const ch of g.channels) {
-              if (nameSet.has(ch.name)) {
+              if (matches(g.acq_name, ch.name)) {
                 matched.push({
                   group_index:  g.index,
                   channel_name: ch.name,
@@ -289,7 +304,7 @@
         // No decoding — match against raw groups only
         for (const g of groups) {
           for (const ch of g.channels) {
-            if (nameSet.has(ch.name)) {
+            if (matches(g.acq_name, ch.name)) {
               matched.push({
                 group_index:  g.index,
                 channel_name: ch.name,

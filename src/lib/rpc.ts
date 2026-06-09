@@ -111,6 +111,20 @@ export interface PreviewBusDecodingResult {
 // ── App configuration (save / load) ───────────────────────────────────────── //
 
 /**
+ * One entry in the saved channel filter.  Both fields are used when
+ * re-applying to a new file so that signals with the same name in different
+ * groups are not confused with one another.  For configs written before this
+ * format was introduced the entry may be a plain string (name-only); the
+ * loader treats those as wildcards that match any group.
+ */
+export interface ChannelFilterEntry {
+  /** Acquisition name of the source channel group. */
+  group_name:   string;
+  /** Signal / channel name within that group. */
+  channel_name: string;
+}
+
+/**
  * Persisted application configuration.
  *
  * A config file captures the current export pipeline settings so that the same
@@ -118,8 +132,8 @@ export interface PreviewBusDecodingResult {
  *
  * Decoding entries use `group_name` as the primary key when re-applying to a
  * new file, falling back to `group_index` when the name is not found.
- * `channel_filter` stores bare signal names; when re-applied they are matched
- * by name across all groups in the new file.
+ * `channel_filter` stores `{group_name, channel_name}` pairs so that signals
+ * with identical names in different groups are matched unambiguously.
  */
 export interface AppConfig {
   /** Schema version — currently always 1. */
@@ -132,8 +146,12 @@ export interface AppConfig {
     /** Absolute path to the .dbc or .arxml database. */
     db_path: string;
   }>;
-  /** Signal names to include in the export; null = no filter (export all). */
-  channel_filter: string[] | null;
+  /**
+   * Signals to include in the export.  null = no filter (export all).
+   * Each entry is a `{group_name, channel_name}` pair; legacy configs may
+   * store plain strings (name-only), which are matched against any group.
+   */
+  channel_filter: ChannelFilterEntry[] | null;
   flatten: boolean;
   export_format: ExportFormat;
   /** Last directory used for export; empty string = none saved. */
