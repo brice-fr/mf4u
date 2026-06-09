@@ -53,6 +53,8 @@
   let pendingConfig: AppConfig | null = $state(null);
   /** Brief toast message ("Saved." / "Loaded." / error) shown for 2 s. */
   let configToast: string = $state("");
+  /** True while applyConfig is running its async work. */
+  let applyingConfig: boolean = $state(false);
 
   // ── Phase A: frame decoding session config ─────────────────────────────── //
   let decodingConfig: DbAssignment[] = $state([]);
@@ -88,15 +90,17 @@
   const totalPhysicalSignals = $derived(
     groups.filter(g => !g.is_bus_raw).reduce((n, g) => n + g.channels.length, 0)
   );
-  const filterActive  = $derived(selectedSignals !== null);
-  const filterCount   = $derived.by(() => selectedSignals !== null ? selectedSignals.length : 0);
+  const filterActive  = $derived(selectedSignals !== null && selectedSignals.some(s => !s.ghost));
+  const filterCount   = $derived.by(() => selectedSignals ? selectedSignals.filter(s => !s.ghost).length : 0);
 
   // Keep native menu items in sync with reactive state
-  $effect(() => { exportMenuItem?.setEnabled(phase === "loaded" && !!sessionId); });
-  $effect(() => { frameDecodingMenuItem?.setEnabled(hasRawFrameGroups); });
-  $effect(() => { channelFilterMenuItem?.setEnabled(phase === "loaded" && !!sessionId); });
+  $effect(() => { exportMenuItem?.setEnabled(phase === "loaded" && !!sessionId && !applyingConfig); });
+  $effect(() => { frameDecodingMenuItem?.setEnabled(hasRawFrameGroups && !applyingConfig); });
+  $effect(() => { channelFilterMenuItem?.setEnabled(phase === "loaded" && !!sessionId && !applyingConfig); });
   $effect(() => { flattenCheckItem?.setChecked(flatten); });
-  $effect(() => { flattenCheckItem?.setEnabled(phase === "loaded" && !!sessionId); });
+  $effect(() => { flattenCheckItem?.setEnabled(phase === "loaded" && !!sessionId && !applyingConfig); });
+  $effect(() => { saveConfigMenuItem?.setEnabled(!applyingConfig); });
+  $effect(() => { loadConfigMenuItem?.setEnabled(!applyingConfig); });
 
   // Native menu items we need to update at runtime
   let exportMenuItem:         Awaited<ReturnType<typeof MenuItem.new>>      | null = null;
@@ -205,6 +209,8 @@
    * are stored as `pendingConfig` for the next file open.
    */
   async function applyConfig(cfg: AppConfig) {
+    applyingConfig = true;
+    try {
     if (cfg.flatten       !== undefined) flatten          = cfg.flatten;
     if (cfg.export_format !== undefined) lastExportFormat = cfg.export_format as ExportFormat;
     if (cfg.output_folder !== undefined) lastOutputFolder = cfg.output_folder;
@@ -317,7 +323,29 @@
         }
       }
 
+      // Add ghost entries for config signals that couldn't be matched in the
+      // current file.  group_index = -1 is the sentinel; they are excluded from
+      // the actual export filter but persist in the config and show grayed in
+      // the filter dialog.
+      const matchedPairs = new Set(matched.map(m => `${m.acq_name}::${m.channel_name}`));
+      for (const e of entries) {
+        const pair = `${e.group_name ?? ""}::${e.channel_name}`;
+        if (!matchedPairs.has(pair)) {
+          matched.push({
+            group_index:  -1,
+            channel_name: e.channel_name,
+            acq_name:     e.group_name ?? "",
+            unit:         "",
+            source:       "physical",
+            ghost:        true,
+          });
+        }
+      }
+
       selectedSignals = matched.length > 0 ? matched : null;
+    }
+    } finally {
+      applyingConfig = false;
     }
   }
 
@@ -638,6 +666,7 @@
     {filterActive}
     {filterCount}
     {flatten}
+    configBusy={applyingConfig}
     onopen={pickFile}
     onsaveconfig={doSaveConfig}
     onloadconfig={doLoadConfig}

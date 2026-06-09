@@ -21,12 +21,13 @@
   // ── types ─────────────────────────────────────────────────────────────── //
 
   interface DisplayChannel {
-    key:          string;   // "${group_index}::${channel_name}"
+    key:          string;   // "${group_index}::${channel_name}" or "ghost::${acq}::${name}"
     group_index:  number;
     acq_name:     string;
     channel_name: string;
     unit:         string;
     source:       SignalSource;
+    ghost?:       boolean;  // from config but unresolvable in current file
   }
 
   interface AvailGroup {
@@ -39,6 +40,10 @@
 
   function chKey(group_index: number, channel_name: string): string {
     return `${group_index}::${channel_name}`;
+  }
+
+  function ghostKey(acq_name: string, channel_name: string): string {
+    return `ghost::${acq_name}::${channel_name}`;
   }
 
   // ── initialise available / toExport from props ────────────────────────── //
@@ -67,25 +72,30 @@
       return { avail: [], exp: [...allPhysical] };
     }
 
-    const selectedKeys   = new Set(selectedSignals.map(s => chKey(s.group_index, s.channel_name)));
     const physicalKeySet = new Set(allPhysical.map(c => c.key));
+
+    // Build selection key set, using ghost-key for ghost entries
+    const selectedKeys = new Set(selectedSignals.map(s =>
+      s.ghost ? ghostKey(s.acq_name, s.channel_name) : chKey(s.group_index, s.channel_name)
+    ));
 
     const inExport   = allPhysical.filter(c => selectedKeys.has(c.key));
     const notExport  = allPhysical.filter(c => !selectedKeys.has(c.key));
 
-    // Restore decoded channels that were stored in selectedSignals
-    const decodedInFilter: DisplayChannel[] = selectedSignals
+    // Restore decoded/ghost channels stored in selectedSignals (not in raw groups)
+    const nonPhysical: DisplayChannel[] = selectedSignals
       .filter(s => !physicalKeySet.has(chKey(s.group_index, s.channel_name)))
       .map(s => ({
-        key:          chKey(s.group_index, s.channel_name),
+        key:          s.ghost ? ghostKey(s.acq_name, s.channel_name) : chKey(s.group_index, s.channel_name),
         group_index:  s.group_index,
         acq_name:     s.acq_name,
         channel_name: s.channel_name,
         unit:         s.unit,
         source:       s.source,
+        ...(s.ghost ? { ghost: true } : {}),
       }));
 
-    return { avail: notExport, exp: [...inExport, ...decodedInFilter] };
+    return { avail: notExport, exp: [...inExport, ...nonPhysical] };
   }
 
   const { avail: initAvail, exp: initExp } = initPanels();
@@ -131,7 +141,17 @@
   // Total across both panels (grows when decoded channels are previewed)
   const totalChannels = $derived(available.length + toExport.length);
 
-  const hasSelection = $derived(dbAssignments.length > 0);
+  const hasSelection  = $derived(dbAssignments.length > 0);
+  const ghostCount    = $derived(toExport.filter(c => c.ghost).length);
+  const realExport    = $derived(toExport.filter(c => !c.ghost).length);
+  const realTotal     = $derived(available.length + realExport);
+
+  // Auto-trigger decoded preview when DBC assignments are configured
+  $effect(() => {
+    if (!previewFetched && !previewLoading && hasSelection) {
+      loadDecodedPreview();
+    }
+  });
 
   // ── shuttle operations ────────────────────────────────────────────────── //
 
@@ -152,7 +172,8 @@
   }
 
   function removeAll() {
-    available = [...available, ...toExport];
+    // Ghost entries are discarded (they don't exist in the file); real entries go back
+    available = [...available, ...toExport.filter(c => !c.ghost)];
     toExport  = [];
     selectedExport = new Set();
   }
@@ -160,7 +181,8 @@
   function removeSelected() {
     if (selectedExport.size === 0) return;
     const keys = selectedExport;
-    available = [...available, ...toExport.filter(c => keys.has(c.key))];
+    // Ghost entries are discarded when deselected
+    available = [...available, ...toExport.filter(c => keys.has(c.key) && !c.ghost)];
     toExport  = toExport.filter(c => !keys.has(c.key));
     selectedExport = new Set();
   }
@@ -191,23 +213,40 @@
     previewError   = null;
     try {
       const result = await getExportableSignals(sessionId, dbAssignments);
-      const existingKeys = new Set([...available.map(c => c.key), ...toExport.map(c => c.key)]);
-      const newDecoded: DisplayChannel[] = [];
+
+      // Build lookup "acq_name::channel_name" → real decoded DisplayChannel
+      const decodedLookup = new Map<string, DisplayChannel>();
       for (const grp of result.groups) {
         if (grp.source !== "decoded") continue;
         for (const ch of grp.channels) {
-          const key = chKey(grp.group_index, ch.name);
-          if (!existingKeys.has(key)) {
-            newDecoded.push({
-              key,
-              group_index:  grp.group_index,
-              acq_name:     grp.acq_name,
-              channel_name: ch.name,
-              unit:         ch.unit,
-              source:       "decoded",
-            });
-          }
+          decodedLookup.set(`${grp.acq_name}::${ch.name}`, {
+            key:          chKey(grp.group_index, ch.name),
+            group_index:  grp.group_index,
+            acq_name:     grp.acq_name,
+            channel_name: ch.name,
+            unit:         ch.unit,
+            source:       "decoded",
+          });
         }
+      }
+
+      // Un-ghost toExport entries that are now resolvable
+      toExport = toExport.map(c => {
+        if (!c.ghost) return c;
+        const real = decodedLookup.get(`${c.acq_name}::${c.channel_name}`);
+        return real ? { ...real } : c;  // resolved → real entry; still missing → keep ghost
+      });
+
+      // Track "acq_name::channel_name" pairs already known in either panel
+      const knownPairs = new Set([
+        ...available.map(c => `${c.acq_name}::${c.channel_name}`),
+        ...toExport.map(c => `${c.acq_name}::${c.channel_name}`),
+      ]);
+
+      // Add newly discovered decoded channels to the available panel
+      const newDecoded: DisplayChannel[] = [];
+      for (const [pair, ch] of decodedLookup) {
+        if (!knownPairs.has(pair)) newDecoded.push(ch);
       }
       available = [...available, ...newDecoded];
       previewFetched = true;
@@ -221,17 +260,32 @@
   // ── close / apply ─────────────────────────────────────────────────────── //
 
   function applyAndClose() {
-    if (toExport.length === 0 || toExport.length === totalChannels) {
-      // Empty selection or all channels → no filter
+    if (toExport.length === 0) {
+      // Nothing selected → no filter
       onchange(null);
     } else {
-      onchange(toExport.map(c => ({
-        group_index:  c.group_index,
-        channel_name: c.channel_name,
-        acq_name:     c.acq_name,
-        unit:         c.unit,
-        source:       c.source,
-      })));
+      // "Select all" only when available is empty, no ghost entries, and no
+      // decoded channels are waiting to be previewed.  Previously the check
+      // was `toExport.length === totalChannels` which fired incorrectly when
+      // the file had no physical groups and toExport held decoded/ghost entries.
+      const isSelectAll =
+        realExport > 0 &&
+        available.length === 0 &&
+        ghostCount === 0 &&
+        (!hasSelection || previewFetched);
+
+      if (isSelectAll) {
+        onchange(null);
+      } else {
+        onchange(toExport.map(c => ({
+          group_index:  c.group_index,
+          channel_name: c.channel_name,
+          acq_name:     c.acq_name,
+          unit:         c.unit,
+          source:       c.source,
+          ...(c.ghost ? { ghost: true } : {}),
+        })));
+      }
     }
     onclose();
   }
@@ -398,6 +452,7 @@
               <div
                 class="ch-row ch-row-export"
                 class:ch-selected={selectedExport.has(ch.key)}
+                class:ch-ghost={ch.ghost}
                 onclick={() => toggleExport(ch.key)}
                 onkeydown={(e) => e.key === "Enter" && toggleExport(ch.key)}
                 role="option"
@@ -408,10 +463,12 @@
                 {#if ch.unit}
                   <span class="ch-unit">[{ch.unit}]</span>
                 {/if}
-                {#if ch.source === "decoded"}
+                {#if ch.ghost}
+                  <span class="ghost-badge" title="Not found in current file">?</span>
+                {:else if ch.source === "decoded"}
                   <span class="decoded-badge">dec</span>
                 {/if}
-                <span class="ch-group">{ch.acq_name}</span>
+                <span class="ch-group">{ch.acq_name || "—"}</span>
               </div>
             {/each}
           {/if}
@@ -419,12 +476,22 @@
 
         <!-- counter -->
         <div class="export-counter">
-          {#if toExport.length === totalChannels || toExport.length === 0}
+          {#if realExport === 0 && ghostCount === 0}
             <span class="counter-all">All signals</span>
+          {:else if realExport === realTotal || realExport === 0}
+            {#if realExport > 0}
+              <span class="counter-all">All signals</span>
+            {/if}
+            {#if ghostCount > 0}
+              <span class="counter-ghost">{ghostCount} unresolved</span>
+            {/if}
           {:else}
-            <span class="counter-n">{toExport.length}</span>
+            <span class="counter-n">{realExport}</span>
             <span class="counter-sep">/</span>
-            <span class="counter-m">{totalChannels} signals</span>
+            <span class="counter-m">{realTotal} signals</span>
+            {#if ghostCount > 0}
+              <span class="counter-ghost">+{ghostCount}?</span>
+            {/if}
           {/if}
         </div>
       </div>
@@ -672,6 +739,24 @@
     white-space: nowrap;
   }
 
+  .ghost-badge {
+    font-size: 0.58rem;
+    font-weight: 700;
+    color: #555;
+    background: #1a1a1a;
+    border: 1px solid #333;
+    border-radius: 3px;
+    padding: 0 4px;
+    flex-shrink: 0;
+    white-space: nowrap;
+    cursor: help;
+  }
+
+  .ch-row.ch-ghost {
+    opacity: 0.45;
+  }
+  .ch-row.ch-ghost .ch-name { color: #777; }
+
   /* ── shuttle column ── */
   .shuttle-col {
     display: flex;
@@ -739,10 +824,11 @@
     padding-right: 0.2rem;
   }
 
-  .counter-all  { color: #555; }
-  .counter-n    { color: #6c9ef8; font-weight: 600; }
-  .counter-sep  { color: #444; }
-  .counter-m    { color: #555; }
+  .counter-all   { color: #555; }
+  .counter-n     { color: #6c9ef8; font-weight: 600; }
+  .counter-sep   { color: #444; }
+  .counter-m     { color: #555; }
+  .counter-ghost { color: #444; font-style: italic; }
 
   /* ── empty hints ── */
   .empty-hint {

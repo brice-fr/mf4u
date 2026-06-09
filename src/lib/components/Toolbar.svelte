@@ -8,6 +8,7 @@
     filterActive      = false,
     filterCount       = 0,
     flatten           = false,
+    configBusy        = false,
     onopen            = () => {},
     onexport          = () => {},
     onframedecoding   = () => {},
@@ -25,6 +26,7 @@
     filterActive?:      boolean;
     filterCount?:       number;
     flatten?:           boolean;
+    configBusy?:        boolean;
     onopen?:            () => void;
     onexport?:          () => void;
     onframedecoding?:   () => void;
@@ -42,7 +44,7 @@
   <button
     class="icon-btn"
     onclick={onopen}
-    disabled={loading}
+    disabled={loading || configBusy}
     title="Open file… (⌘O)"
     aria-label="Open file"
   >
@@ -72,6 +74,7 @@
   <button
     class="icon-btn"
     onclick={onloadconfig}
+    disabled={configBusy}
     title="Load configuration… (⌘⇧O)"
     aria-label="Load configuration"
   >
@@ -101,6 +104,7 @@
   <button
     class="icon-btn"
     onclick={onsaveconfig}
+    disabled={configBusy}
     title="Save configuration… (⌘⇧S)"
     aria-label="Save configuration"
   >
@@ -134,7 +138,7 @@
       class="icon-btn"
       class:active={decodingActive}
       onclick={onframedecoding}
-      disabled={!hasRawFrameGroups}
+      disabled={!hasRawFrameGroups || configBusy}
       title="Configure frame decoding…"
       aria-label="Configure frame decoding"
     >
@@ -157,7 +161,7 @@
       class="icon-btn"
       class:active={filterActive}
       onclick={onchannelfilter}
-      disabled={!hasFile}
+      disabled={!hasFile || configBusy}
       title="Configure channel filter…"
       aria-label="Configure channel filter"
     >
@@ -178,7 +182,7 @@
     class="icon-btn"
     class:active={flatten}
     onclick={onflattentoggle}
-    disabled={!hasFile}
+    disabled={!hasFile || configBusy}
     title={flatten ? "Flatten output: on — click to toggle off" : "Flatten output: off — merge all groups into one table"}
     aria-label="Toggle flatten output"
     aria-pressed={flatten}
@@ -198,7 +202,7 @@
   <button
     class="icon-btn"
     onclick={onexport}
-    disabled={!hasFile}
+    disabled={!hasFile || configBusy}
     title="Export… (⌘E)"
     aria-label="Export file"
   >

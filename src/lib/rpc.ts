@@ -180,6 +180,9 @@ export interface FilteredChannel {
   acq_name: string;
   unit: string;
   source: SignalSource;
+  /** True when from a saved config but unresolvable in the current file.
+   *  group_index is -1; excluded from the actual export filter. */
+  ghost?: boolean;
 }
 
 export interface ExportableChannel {
@@ -242,8 +245,11 @@ export async function startExport(
     dbAssignments: dbAssignments && dbAssignments.length > 0 ? dbAssignments : null,
     flatten: flatten ?? false,
     matLinkGroups: matLinkGroups ?? false,
-    // Send only the minimal (group_index, channel_name) fields; backend ignores extras
-    signalFilter: signalFilter && signalFilter.length > 0 ? signalFilter : null,
+    // Send only non-ghost entries; backend only reads group_index and channel_name
+    signalFilter: (() => {
+      const real = signalFilter?.filter(c => !c.ghost);
+      return real && real.length > 0 ? real : null;
+    })(),
     splitMode:          splitMode          ?? "none",
     splitSizeMb:        splitSizeMB        ?? 100,
     splitPeriodS:       splitPeriodS       ?? 60,

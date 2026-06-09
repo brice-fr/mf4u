@@ -52,6 +52,7 @@ def _run_chunk(
     mat_link_groups: bool,
     filter_set: "set[tuple[int, str]] | None",
     original_mdf: Any = None,
+    chunk_start_time: Any = None,
 ) -> None:
     """Execute one export chunk (the whole file, or one time window when splitting).
 
@@ -62,7 +63,7 @@ def _run_chunk(
     """
     if fmt == "mf4":
         _do_mf4(mdf, output_path, job, original_mdf=original_mdf,
-                filter_set=filter_set)
+                filter_set=filter_set, chunk_start_time=chunk_start_time)
     elif do_flatten:
         # Phase C — collect all groups into a flat table, then write once
         ts, cols = _build_flat_table(mdf, job, filter_set=filter_set)
@@ -180,21 +181,68 @@ def start(
                     )
 
                     if len(windows) > 1:
-                        job.total        = len(windows)
-                        proxy            = _ChunkProxy(job)
-                        recording_start  = getattr(
-                            getattr(active_mdf, "header", None), "start_time", None
+                        job.total       = len(windows)
+                        proxy           = _ChunkProxy(job)
+                        # Always derive recording_start from the original file-backed
+                        # MDF; extract_bus_logging may not copy the header start_time.
+                        recording_start = (
+                            getattr(getattr(mdf, "header", None), "start_time", None)
+                            or getattr(getattr(active_mdf, "header", None), "start_time", None)
                         )
+
+                        # When decoding is active, pre-build an (acq_name, channel_name)
+                        # lookup so that the per-chunk filter_set can be rebuilt against
+                        # each chunk's own decoded group indices (cut-then-decode produces
+                        # independent MDFs whose group numbering may differ from the full
+                        # decoded MDF).
+                        name_pair_filter: "set[tuple[str, str]] | None" = None
+                        if db_assignments and signal_filter:
+                            name_pair_filter = {
+                                (str(f.get("acq_name", "")), str(f["channel_name"]))
+                                for f in signal_filter
+                            }
 
                         for chunk_i, (w_start, w_stop) in enumerate(windows):
                             if job.cancel_requested:
                                 break
-                            cut        = active_mdf.cut(start=w_start, stop=w_stop)
+
+                            if db_assignments:
+                                # Cut-then-decode: cut the original raw MDF first so
+                                # that asammdf's well-tested file-backed cut path is
+                                # used, then run extract_bus_logging only on the chunk.
+                                # Cutting an in-memory decoded MDF (decode-then-cut)
+                                # can silently ignore the start boundary in some
+                                # asammdf versions, causing every subsequent chunk to
+                                # include data from t=0.
+                                # time_from_zero=True rebases timestamps to 0 so each
+                                # split file is self-contained.
+                                raw_cut      = mdf.cut(start=w_start, stop=w_stop, whence=0, time_from_zero=True)
+                                cut          = _build_decoded_mdf(raw_cut, db_assignments)
+                                chunk_filter = _build_chunk_filter(cut, name_pair_filter)
+                            else:
+                                cut          = active_mdf.cut(start=w_start, stop=w_stop, whence=0, time_from_zero=True)
+                                chunk_filter = filter_set
+
+                            # Compute the chunk's absolute start datetime once.
+                            # This is forwarded to _do_mf4 and applied to
+                            # mdf_to_save just before save() — necessary because
+                            # mdf.filter() creates a new MDF object that may not
+                            # inherit the start_time set here on cut.
+                            chunk_start_time = None
+                            if recording_start is not None:
+                                try:
+                                    from datetime import timedelta as _td
+                                    chunk_start_time = recording_start + _td(seconds=w_start)
+                                    cut.header.start_time = chunk_start_time
+                                except Exception:
+                                    pass
+
                             suffix     = _absolute_suffix(w_start, recording_start)
                             chunk_path = _insert_suffix(output_path, suffix)
                             _run_chunk(cut, fmt, chunk_path, proxy,
                                        do_flatten, mat_link_groups,
-                                       filter_set, original_mdf)
+                                       chunk_filter, original_mdf,
+                                       chunk_start_time=chunk_start_time)
                             job.done = chunk_i + 1
 
                         to_delete = job._cleanup if job._cleanup else [output_path]
@@ -777,6 +825,7 @@ def _do_mf4(
     job: _Job,
     original_mdf: Any = None,
     filter_set: "set[tuple[int, str]] | None" = None,
+    chunk_start_time: Any = None,
 ) -> None:
     """Re-export *mdf* to an MF4 file using ``MDF.save()``.
 
@@ -808,9 +857,24 @@ def _do_mf4(
 
     mdf_to_save = mdf
     if filter_set is not None:
-        channel_names = sorted({ch_name for _, ch_name in filter_set})
+        # Build (name, group, channel_index) 3-tuples so asammdf resolves each
+        # channel via a direct lookup instead of the ambiguity-check path.
+        # 2-tuple (name, group) still triggers "Multiple occurrences" +
+        # logger.exception() (→ "[sidecar] NoneType: None") when the same name
+        # appears more than once in a group (e.g. decoded bus signals).  The
+        # 3-tuple path skips that check entirely: it just verifies
+        # (group, index) in channels_db[name] and returns immediately.
+        channels_db = getattr(getattr(mdf, "_mdf", None), "channels_db", {})
+        channel_specs: list[tuple[str, int, int]] = []
+        for grp_idx, ch_name in filter_set:
+            ch_idx = next(
+                (ci for gi, ci in channels_db.get(ch_name, ()) if gi == grp_idx),
+                None,
+            )
+            if ch_idx is not None:
+                channel_specs.append((ch_name, grp_idx, ch_idx))
         try:
-            mdf_to_save = mdf.filter(channel_names)
+            mdf_to_save = mdf.filter(channel_specs) if channel_specs else mdf
         except Exception:  # noqa: BLE001
             mdf_to_save = mdf  # fallback: save unfiltered
 
@@ -821,6 +885,16 @@ def _do_mf4(
     # they now hold physical signals.
     if original_mdf is not None:
         _clear_decoded_bus_event_flags(mdf_to_save)
+
+    # For split exports, mdf.filter() above creates a new MDF object and may
+    # not propagate the start_time we set on the cut MDF.  Apply the correct
+    # chunk start_time to mdf_to_save just before saving so the saved file
+    # always has the right header metadata.
+    if chunk_start_time is not None:
+        try:
+            mdf_to_save.header.start_time = chunk_start_time
+        except Exception:  # noqa: BLE001
+            pass
 
     job._cleanup.append(output_path)
     mdf_to_save.save(output_path, overwrite=True)
@@ -1399,6 +1473,34 @@ class _ChunkProxy:
 
     def request_cancel(self) -> None:
         self._parent.request_cancel()
+
+
+def _build_chunk_filter(
+    chunk_mdf: Any,
+    name_pair_filter: "set[tuple[str, str]] | None",
+) -> "set[tuple[int, str]] | None":
+    """Rebuild a (group_index, channel_name) filter_set for a per-chunk decoded MDF.
+
+    After cut-then-decode each chunk's decoded MDF is independent; messages
+    absent from the time window may not appear, so group indices differ from those
+    in the full decoded MDF.  This function maps the saved (acq_name, channel_name)
+    pairs back to the chunk's actual group indices.
+
+    Returns ``None`` when no name-pair filter is active (export everything).
+    Returns an empty set when none of the requested channels are present in the
+    chunk (the chunk should produce an empty/skipped output).
+    """
+    if name_pair_filter is None:
+        return None
+    result: set[tuple[int, str]] = set()
+    for i, group in enumerate(chunk_mdf.groups):
+        cg  = group.channel_group
+        acq = str(getattr(cg, "acq_name", "") or "")
+        for ch in group.channels:
+            ch_name = str(ch.name or "")
+            if ch_name and (acq, ch_name) in name_pair_filter:
+                result.add((i, ch_name))
+    return result
 
 
 def _absolute_suffix(t_mdf_s: float, recording_start: Any) -> str:
