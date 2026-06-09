@@ -271,13 +271,17 @@ def handle_start_export(req: dict) -> dict:
     if err:
         return err
 
-    params          = req.get("params", {})
-    fmt             = params.get("format", "")
-    output_path     = params.get("output_path", "")
-    db_assignments  = params.get("db_assignments") or None  # None if absent/null/[]
-    flatten         = bool(params.get("flatten") or False)
-    mat_link_groups = bool(params.get("mat_link_groups") or False)
-    signal_filter   = params.get("signal_filter") or None   # None if absent/null/[]
+    params               = req.get("params", {})
+    fmt                  = params.get("format", "")
+    output_path          = params.get("output_path", "")
+    db_assignments       = params.get("db_assignments") or None  # None if absent/null/[]
+    flatten              = bool(params.get("flatten") or False)
+    mat_link_groups      = bool(params.get("mat_link_groups") or False)
+    signal_filter        = params.get("signal_filter") or None   # None if absent/null/[]
+    split_mode           = str(params.get("split_mode") or "none").strip()
+    split_size_mb        = float(params.get("split_size_mb") or 100.0)
+    split_period_s       = float(params.get("split_period_s") or 60.0)
+    split_first_offset_s = float(params.get("split_first_offset_s") or 0.0)
 
     if fmt not in ("mat", "tdms", "parquet", "csv", "tsv", "xlsx", "mf4"):
         return _err(req, 1001,
@@ -287,10 +291,14 @@ def handle_start_export(req: dict) -> dict:
 
     try:
         import export as exp
-        job_id = exp.start(session["mdf"], fmt, output_path,
-                           db_assignments=db_assignments, flatten=flatten,
-                           mat_link_groups=mat_link_groups,
-                           signal_filter=signal_filter)
+        job_id = exp.start(
+            session["mdf"], fmt, output_path,
+            db_assignments=db_assignments, flatten=flatten,
+            mat_link_groups=mat_link_groups, signal_filter=signal_filter,
+            split_mode=split_mode, split_size_mb=split_size_mb,
+            split_period_s=split_period_s, split_first_offset_s=split_first_offset_s,
+            source_path=session.get("path", ""),
+        )
         return _ok(req, {"job_id": job_id})
     except Exception as exc:  # noqa: BLE001
         return _err(req, 1001, f"failed to start export: {exc}")

@@ -249,6 +249,13 @@ jobs:
 
             ---
 
+            ### What's new in v0.3.2
+
+            #### Output splitting
+            Export can now be split into multiple files automatically. Two modes are available in Preferences → Output Splitting: **By time** (fixed intervals defined as hours/minutes/seconds, with an optional absolute first-split date and time) and **By size** (target file size in MB — the sidecar estimates an equivalent time period from the source file density). Each chunk is named with its absolute recording timestamp in `YYMMDD_HHMMSS` format (e.g. `recording_240315_102445.mat`), falling back to a relative-seconds suffix when the file has no header timestamp. Split settings are reflected in the Export dialog's active-settings strip and are included in saved `.mf4u` configuration files. All times in the UI are displayed in 24-hour format.
+
+            ---
+
             ### What's new in v0.3.1
 
             #### Configuration save/load

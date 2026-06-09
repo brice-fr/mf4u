@@ -43,6 +43,59 @@ _JOBS: dict[str, _Job] = {}
 # Public API
 # --------------------------------------------------------------------------- #
 
+def _run_chunk(
+    mdf: Any,
+    fmt: str,
+    output_path: str,
+    job: Any,           # _Job or _ChunkProxy — duck-typed
+    do_flatten: bool,
+    mat_link_groups: bool,
+    filter_set: "set[tuple[int, str]] | None",
+    original_mdf: Any = None,
+) -> None:
+    """Execute one export chunk (the whole file, or one time window when splitting).
+
+    Called once for no-split exports, or once per time window when splitting.
+    The *job* argument may be either a real ``_Job`` (no-split path) or a
+    ``_ChunkProxy`` (split path) — both support the duck-type interface used
+    by the individual ``_do_*`` functions.
+    """
+    if fmt == "mf4":
+        _do_mf4(mdf, output_path, job, original_mdf=original_mdf,
+                filter_set=filter_set)
+    elif do_flatten:
+        # Phase C — collect all groups into a flat table, then write once
+        ts, cols = _build_flat_table(mdf, job, filter_set=filter_set)
+        if not job.cancel_requested and cols:
+            if fmt == "mat":
+                _write_flat_mat(output_path, ts, cols)
+            elif fmt == "parquet":
+                job._cleanup.append(output_path)
+                _write_flat_parquet(output_path, ts, cols)
+            elif fmt in ("csv", "tsv"):
+                job._cleanup.append(output_path)
+                _write_flat_csv(output_path, ts, cols,
+                                delimiter="," if fmt == "csv" else "\t")
+            elif fmt == "xlsx":
+                job._cleanup.append(output_path)
+                _write_flat_xlsx(output_path, ts, cols)
+    elif fmt == "mat":
+        _do_mat(mdf, output_path, job,
+                mat_link_groups=mat_link_groups, filter_set=filter_set)
+    elif fmt == "tdms":
+        _do_tdms(mdf, output_path, job, filter_set=filter_set)
+    elif fmt == "parquet":
+        _do_parquet(mdf, output_path, job, filter_set=filter_set)
+    elif fmt == "csv":
+        _do_csv(mdf, output_path, job, delimiter=",", filter_set=filter_set)
+    elif fmt == "tsv":
+        _do_csv(mdf, output_path, job, delimiter="\t", filter_set=filter_set)
+    elif fmt == "xlsx":
+        _do_xlsx(mdf, output_path, job, filter_set=filter_set)
+    else:
+        raise ValueError(f"unsupported format: {fmt!r}")
+
+
 def start(
     mdf: Any,
     fmt: str,
@@ -51,6 +104,11 @@ def start(
     flatten: bool = False,
     mat_link_groups: bool = False,
     signal_filter: "list[dict] | None" = None,
+    split_mode: str = "none",
+    split_size_mb: float = 100.0,
+    split_period_s: float = 60.0,
+    split_first_offset_s: float = 0.0,
+    source_path: str = "",
 ) -> str:
     """Start an export job in a background thread; return its job_id.
 
@@ -65,6 +123,14 @@ def start(
     If *signal_filter* is provided (a list of ``{"group_index": int, "channel_name": str}``
     dicts), only the listed channels are written; all others are silently skipped.
     Omit or pass ``None`` to export all channels.
+
+    *split_mode* may be ``"none"`` (default), ``"time"`` (fixed time windows of
+    *split_period_s* seconds), or ``"size"`` (target output file size of
+    *split_size_mb* MB, implemented by estimating an equivalent time period from
+    the source file density).  When splitting is active the output path serves as
+    a base name; each chunk is written to a file with ``_T#####s`` inserted
+    before the extension, where ##### is the chunk's start time offset in seconds
+    from the first sample.
     """
     # flatten only applies to tabular formats; MF4 always uses a single save() step
     do_flatten    = flatten and fmt not in ("tdms", "mf4")
@@ -93,51 +159,64 @@ def start(
                 if fmt != "mf4":
                     job.total = len(active_mdf.groups)
 
-            if fmt == "mf4":
-                _do_mf4(active_mdf, output_path, job, original_mdf=original_mdf,
-                        filter_set=filter_set)
-            elif do_flatten:
-                # Phase C — collect all groups into a flat table, then write once
-                ts, cols = _build_flat_table(active_mdf, job, filter_set=filter_set)
-                if not job.cancel_requested and cols:
-                    if fmt == "mat":
-                        _write_flat_mat(output_path, ts, cols)
-                    elif fmt == "parquet":
-                        job._cleanup.append(output_path)
-                        _write_flat_parquet(output_path, ts, cols)
-                    elif fmt in ("csv", "tsv"):
-                        job._cleanup.append(output_path)
-                        _write_flat_csv(output_path, ts, cols,
-                                        delimiter="," if fmt == "csv" else "\t")
-                    elif fmt == "xlsx":
-                        job._cleanup.append(output_path)
-                        _write_flat_xlsx(output_path, ts, cols)
-            elif fmt == "mat":
-                _do_mat(active_mdf, output_path, job,
-                        mat_link_groups=mat_link_groups, filter_set=filter_set)
-            elif fmt == "tdms":
-                _do_tdms(active_mdf, output_path, job, filter_set=filter_set)
-            elif fmt == "parquet":
-                _do_parquet(active_mdf, output_path, job, filter_set=filter_set)
-            elif fmt == "csv":
-                _do_csv(active_mdf, output_path, job, delimiter=",", filter_set=filter_set)
-            elif fmt == "tsv":
-                _do_csv(active_mdf, output_path, job, delimiter="\t", filter_set=filter_set)
-            elif fmt == "xlsx":
-                _do_xlsx(active_mdf, output_path, job, filter_set=filter_set)
-            else:
-                job.error  = f"unsupported format: {fmt!r}"
-                job.status = "error"
-                return
+            # ── Split dispatch ───────────────────────────────────────────── #
+            effective_split = split_mode if split_mode in ("time", "size") else "none"
 
-            # Determine which files to remove on cancel / error
+            if effective_split != "none":
+                t_min, t_max = _get_time_range(active_mdf)
+                duration = t_max - t_min
+
+                if duration > 0:
+                    if effective_split == "size":
+                        bps    = _estimate_bps(active_mdf, source_path, duration)
+                        period = (split_size_mb * 1024 * 1024 / bps
+                                  if bps > 0 else duration)
+                        period = max(1.0, period)
+                    else:
+                        period = max(1.0, split_period_s)
+
+                    windows = _split_time_windows(
+                        t_min, t_max, period, split_first_offset_s
+                    )
+
+                    if len(windows) > 1:
+                        job.total        = len(windows)
+                        proxy            = _ChunkProxy(job)
+                        recording_start  = getattr(
+                            getattr(active_mdf, "header", None), "start_time", None
+                        )
+
+                        for chunk_i, (w_start, w_stop) in enumerate(windows):
+                            if job.cancel_requested:
+                                break
+                            cut        = active_mdf.cut(start=w_start, stop=w_stop)
+                            suffix     = _absolute_suffix(w_start, recording_start)
+                            chunk_path = _insert_suffix(output_path, suffix)
+                            _run_chunk(cut, fmt, chunk_path, proxy,
+                                       do_flatten, mat_link_groups,
+                                       filter_set, original_mdf)
+                            job.done = chunk_i + 1
+
+                        to_delete = job._cleanup if job._cleanup else [output_path]
+                        if job.cancel_requested:
+                            for p in to_delete:
+                                _delete(p)
+                        else:
+                            job.status = "done"
+                        return
+            # Fall through: no split (or duration ≤ 0 / single window only)
+
+            # ── Single-file path ─────────────────────────────────────────── #
+            _run_chunk(active_mdf, fmt, output_path, job,
+                       do_flatten, mat_link_groups, filter_set, original_mdf)
+
             to_delete = job._cleanup if job._cleanup else [output_path]
             if job.cancel_requested:
                 for p in to_delete:
                     _delete(p)
-                # status was already set to "cancelled" in cancel()
             else:
                 job.status = "done"
+
         except Exception as exc:   # noqa: BLE001
             job.error  = str(exc)
             job.status = "error"
@@ -1200,3 +1279,149 @@ def _delete(path: str) -> None:
             os.remove(path)
     except OSError:
         pass
+
+
+# --------------------------------------------------------------------------- #
+# Split-output helpers
+# --------------------------------------------------------------------------- #
+
+def _get_time_range(mdf: Any) -> "tuple[float, float]":
+    """Return (t_min, t_max) across all groups.  Returns (0.0, 0.0) when no data."""
+    t_min, t_max = float("inf"), float("-inf")
+    for i in range(len(mdf.groups)):
+        try:
+            ts = mdf.get_master(index=i)
+            if ts is not None and len(ts) > 0:
+                t_min = min(t_min, float(ts[0]))
+                t_max = max(t_max, float(ts[-1]))
+        except Exception:  # noqa: BLE001
+            continue
+    if t_min == float("inf"):
+        return 0.0, 0.0
+    return t_min, t_max
+
+
+def _split_time_windows(
+    t_min: float,
+    t_max: float,
+    period: float,
+    first_offset: float,
+) -> "list[tuple[float, float]]":
+    """Generate non-overlapping (start, stop) windows covering [t_min, t_max].
+
+    The first split boundary falls at ``t_min + first_offset``.
+    When *first_offset* is 0, windows start at *t_min* with uniform spacing of
+    *period*.  A positive *first_offset* produces an initial shorter window
+    [t_min, t_min+first_offset) before the regular windows begin.
+    """
+    if period <= 0:
+        return [(t_min, t_max)]
+
+    windows: list[tuple[float, float]] = []
+    first_boundary = t_min + first_offset
+
+    # Optional partial first window before the first boundary
+    if first_offset > 0 and first_boundary < t_max:
+        windows.append((t_min, first_boundary))
+
+    # Regular windows from first_boundary to t_max
+    t = first_boundary if first_offset > 0 else t_min
+    while t < t_max:
+        windows.append((t, min(t + period, t_max)))
+        t += period
+
+    return windows if windows else [(t_min, t_max)]
+
+
+def _estimate_bps(mdf: Any, source_path: str, duration: float) -> float:
+    """Estimate source bytes-per-second to auto-calculate a size-based split period.
+
+    Uses the actual source file size when available; falls back to a rough
+    8-bytes-per-sample estimate when the path is missing or inaccessible.
+    Returns 0 when estimation is impossible.
+    """
+    if duration <= 0:
+        return 0.0
+    if source_path and os.path.isfile(source_path):
+        return os.path.getsize(source_path) / duration
+    # Rough fallback: count cycles_nr × channels × 8 bytes
+    total = sum(
+        int(getattr(g.channel_group, "cycles_nr", 0) or 0) * len(g.channels)
+        for g in mdf.groups
+    )
+    return (total * 8) / duration if total > 0 else 0.0
+
+
+def _insert_suffix(output_path: str, suffix: str) -> str:
+    """Insert *suffix* before the file extension.
+
+    Example: _insert_suffix("/out/file.mat", "_T00060s") → "/out/file_T00060s.mat"
+    """
+    stem, ext = os.path.splitext(output_path)
+    return f"{stem}{suffix}{ext}"
+
+
+class _ChunkProxy:
+    """Forwards cancel checks and _cleanup references to a parent _Job while
+    suppressing per-group done/total updates from inner export functions.
+    This lets each chunk's export function run without overwriting the chunk-level
+    progress tracked by the parent job.
+    """
+
+    def __init__(self, parent: "_Job") -> None:
+        self._parent  = parent
+        # Share the parent's cleanup list so cancelled chunk files are purged.
+        self._cleanup = parent._cleanup
+        self.error:  "str | None" = None
+        self.status: str          = "running"
+
+    @property
+    def cancel_requested(self) -> bool:
+        return self._parent.cancel_requested
+
+    # Suppress total/done updates from inner export functions; the split
+    # dispatcher maintains the parent job's counters itself.
+    @property
+    def total(self) -> int:
+        return self._parent.total
+
+    @total.setter
+    def total(self, _: int) -> None:
+        pass
+
+    @property
+    def done(self) -> int:
+        return self._parent.done
+
+    @done.setter
+    def done(self, _: int) -> None:
+        pass
+
+    def request_cancel(self) -> None:
+        self._parent.request_cancel()
+
+
+def _absolute_suffix(t_mdf_s: float, recording_start: Any) -> str:
+    """Return a ``_YYMMDD_HHMMSS`` filename suffix for the given MDF timestamp.
+
+    *t_mdf_s* is the MDF-internal timestamp in seconds (as returned by
+    ``get_master``).  *recording_start* is the ``datetime`` object stored in the
+    MDF header (``mdf.header.start_time``); adding *t_mdf_s* to it gives the
+    absolute point in time for this chunk's start.
+
+    Timezone info is stripped before formatting so the output matches the
+    time as recorded in the file header (no implicit UTC conversion).
+    Falls back to a zero-padded seconds offset when *recording_start* is
+    unavailable or the conversion fails.
+    """
+    if recording_start is None:
+        return f"_T{int(t_mdf_s):05d}s"
+    try:
+        from datetime import timedelta
+        abs_dt = recording_start + timedelta(seconds=t_mdf_s)
+        # Strip any timezone info — format the time exactly as stored in the header.
+        if getattr(abs_dt, "tzinfo", None) is not None:
+            abs_dt = abs_dt.replace(tzinfo=None)
+        return abs_dt.strftime("_%y%m%d_%H%M%S")
+    except Exception:  # noqa: BLE001
+        return f"_T{int(t_mdf_s):05d}s"

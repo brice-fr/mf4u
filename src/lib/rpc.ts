@@ -77,6 +77,7 @@ export interface ChannelStats {
 }
 
 export type ExportFormat = "tdms" | "mat" | "parquet" | "csv" | "tsv" | "xlsx" | "mf4";
+export type SplitMode   = "none" | "time" | "size";
 
 export type ExportStatus = "running" | "done" | "error" | "cancelled" | "not_found";
 
@@ -138,6 +139,12 @@ export interface AppConfig {
   /** Last directory used for export; empty string = none saved. */
   output_folder: string;
   mat_link_groups: boolean;
+  /** Output splitting settings (optional — omitted when mode is "none"). */
+  split_mode?: SplitMode;
+  split_size_mb?: number;
+  split_period_s?: number;
+  /** ISO 8601 datetime of the first split boundary; empty = start from file begin. */
+  split_first_time?: string;
 }
 
 // ── Phase B: channel filter ────────────────────────────────────────────────── //
@@ -205,6 +212,10 @@ export async function startExport(
   flatten?: boolean,
   matLinkGroups?: boolean,
   signalFilter?: FilteredChannel[] | null,
+  splitMode?: SplitMode,
+  splitSizeMB?: number,
+  splitPeriodS?: number,
+  splitFirstOffsetS?: number,
 ): Promise<{ job_id: string }> {
   return invoke<{ job_id: string }>("start_export", {
     sessionId,
@@ -215,6 +226,10 @@ export async function startExport(
     matLinkGroups: matLinkGroups ?? false,
     // Send only the minimal (group_index, channel_name) fields; backend ignores extras
     signalFilter: signalFilter && signalFilter.length > 0 ? signalFilter : null,
+    splitMode:          splitMode          ?? "none",
+    splitSizeMb:        splitSizeMB        ?? 100,
+    splitPeriodS:       splitPeriodS       ?? 60,
+    splitFirstOffsetS:  splitFirstOffsetS  ?? 0,
   });
 }
 
@@ -292,6 +307,7 @@ export function formatDateTime(iso: string | null): string {
       year: "numeric", month: "2-digit", day: "2-digit",
       hour: "2-digit", minute: "2-digit", second: "2-digit",
       fractionalSecondDigits: 3,
+      hour12: false,
     });
   } catch {
     return iso;

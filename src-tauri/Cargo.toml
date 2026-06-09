@@ -1,6 +1,6 @@
 [package]
 name = "mf4u"
-version = "0.3.1"
+version = "0.3.2"
 description = "MF4 file inspector and exporter"
 authors = []
 edition = "2021"

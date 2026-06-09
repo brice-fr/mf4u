@@ -1,20 +1,25 @@
 <script lang="ts">
   import { save as saveDialog } from "@tauri-apps/plugin-dialog";
   import { startExport, getExportProgress, cancelExport } from "$lib/rpc";
-  import type { ExportJob, DbAssignment, FilteredChannel, ExportFormat } from "$lib/rpc";
+  import type { ExportJob, DbAssignment, FilteredChannel, ExportFormat, SplitMode } from "$lib/rpc";
 
   type Fmt = ExportFormat;
 
   let {
     sessionId,
-    fileName        = "",
-    dbAssignments   = [],
-    flatten         = false,
-    matLinkGroups   = false,
-    signalFilter    = null,
-    totalSignals    = 0,
-    initialFormat   = "tdms" as Fmt,
-    initialFolder   = "",
+    fileName          = "",
+    dbAssignments     = [],
+    flatten           = false,
+    matLinkGroups     = false,
+    signalFilter      = null,
+    totalSignals      = 0,
+    initialFormat     = "tdms" as Fmt,
+    initialFolder     = "",
+    splitMode         = "none" as SplitMode,
+    splitSizeMB       = 100,
+    splitPeriodS      = 60,
+    splitFirstTime    = "",
+    splitFirstOffsetS = 0,
     onclose,
     onfmtchange,
     onfolderchange,
@@ -27,15 +32,46 @@
     signalFilter?:   FilteredChannel[] | null;
     totalSignals?:   number;
     /** Format to pre-select when the dialog opens (from a loaded config). */
-    initialFormat?:  Fmt;
+    initialFormat?:   Fmt;
     /** Directory to use as the base for the save-file dialog default path. */
-    initialFolder?:  string;
-    onclose:         () => void;
+    initialFolder?:   string;
+    /** Split-output settings from preferences. */
+    splitMode?:       SplitMode;
+    splitSizeMB?:     number;
+    splitPeriodS?:    number;
+    /** ISO datetime of the first split boundary (for display only). */
+    splitFirstTime?:  string;
+    /** Seconds offset from file start for the first split boundary (computed by parent). */
+    splitFirstOffsetS?: number;
+    onclose:          () => void;
     /** Called whenever the user changes the format selection. */
-    onfmtchange?:    (fmt: Fmt) => void;
+    onfmtchange?:     (fmt: Fmt) => void;
     /** Called whenever the user picks an output path; receives the directory part. */
-    onfolderchange?: (folder: string) => void;
+    onfolderchange?:  (folder: string) => void;
   } = $props();
+
+  /** Format an ISO timestamp as a short 24-hour local datetime string. */
+  function fmtDt(iso: string): string {
+    try {
+      return new Date(iso).toLocaleString(undefined, {
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", second: "2-digit",
+        hour12: false,
+      });
+    } catch { return iso; }
+  }
+
+  /** Format seconds as H h MM m SS s, omitting leading zero fields. */
+  function fmtHMS(totalS: number): string {
+    const h = Math.floor(totalS / 3600);
+    const m = Math.floor((totalS % 3600) / 60);
+    const s = Math.floor(totalS % 60);
+    const parts: string[] = [];
+    if (h) parts.push(`${h} h`);
+    if (m || h) parts.push(`${String(m).padStart(h ? 2 : 1, "0")} m`);
+    parts.push(`${String(s).padStart(m || h ? 2 : 1, "0")} s`);
+    return parts.join(" ");
+  }
 
   /** Strip any extension from the source file name to use as the export stem. */
   function exportStem(): string {
@@ -102,7 +138,10 @@
   const decodingGroupCount   = $derived(new Set(dbAssignments.map(a => a.group_index)).size);
   const effectiveMatLink     = $derived(matLinkGroups && FMT_META[format].supportsTimeLink && !effectiveFlatten);
   const hasSignalFilter      = $derived(signalFilter !== null && signalFilter !== undefined);
-  const hasActiveSettings    = $derived(dbAssignments.length > 0 || effectiveFlatten || effectiveMatLink || hasSignalFilter);
+  const splitActive          = $derived((splitMode ?? "none") !== "none");
+  const hasActiveSettings    = $derived(
+    dbAssignments.length > 0 || effectiveFlatten || effectiveMatLink || hasSignalFilter || splitActive
+  );
 
   async function runExport() {
     if (!outputPath || jobId) return;
@@ -113,6 +152,10 @@
         effectiveFlatten,
         effectiveMatLink,
         signalFilter,
+        splitMode,
+        splitSizeMB,
+        splitPeriodS,
+        splitFirstOffsetS,
       );
       jobId = r.job_id;
       job   = { status: "running", done: 0, total: 0, error: null };
@@ -264,6 +307,18 @@
               <span class="strip-val">channels suffixed t1, t2, …</span>
             </div>
           {/if}
+          {#if splitActive}
+            <div class="strip-row">
+              <span class="strip-key">Split output</span>
+              <span class="strip-val">
+                {#if splitMode === "time"}
+                  every {fmtHMS(splitPeriodS)}{splitFirstTime ? ` · first split at ${fmtDt(splitFirstTime)}` : ""} → <em>name_YYMMDD_HHMMSS.ext</em>
+                {:else}
+                  ≈ {splitSizeMB} MB per file → <em>name_T#####s.ext</em>
+                {/if}
+              </span>
+            </div>
+          {/if}
         </div>
       </div>
     {/if}
@@ -276,7 +331,7 @@
             <div class="progress-fill" style:width="{pct}%"></div>
           </div>
           <span class="progress-text">
-            {job.done} / {job.total} groups&nbsp;({pct}%)
+            {job.done} / {job.total} {splitActive ? "files" : "groups"}&nbsp;({pct}%)
           </span>
         {:else if isDone}
           <span class="status-ok">✓ Export complete</span>

@@ -178,6 +178,12 @@
       export_format:  lastExportFormat,
       output_folder:  lastOutputFolder,
       mat_link_groups: prefs.matLinkGroups,
+      ...(prefs.splitMode !== "none" && {
+        split_mode:       prefs.splitMode,
+        split_size_mb:    prefs.splitSizeMB,
+        split_period_s:   prefs.splitPeriodS,
+        split_first_time: prefs.splitFirstTime,
+      }),
     };
   }
 
@@ -196,6 +202,16 @@
     if (cfg.output_folder !== undefined) lastOutputFolder = cfg.output_folder;
     if (cfg.mat_link_groups !== undefined) {
       prefs = { ...prefs, matLinkGroups: cfg.mat_link_groups };
+      savePrefs(prefs);
+    }
+    if (cfg.split_mode !== undefined) {
+      prefs = {
+        ...prefs,
+        splitMode:      cfg.split_mode,
+        ...(cfg.split_size_mb   !== undefined && { splitSizeMB:   cfg.split_size_mb }),
+        ...(cfg.split_period_s  !== undefined && { splitPeriodS:  cfg.split_period_s }),
+        ...(cfg.split_first_time !== undefined && { splitFirstTime: cfg.split_first_time }),
+      };
       savePrefs(prefs);
     }
 
@@ -242,6 +258,22 @@
         }
       }
       selectedSignals = matched.length > 0 ? matched : null;
+    }
+  }
+
+  /**
+   * Convert the stored absolute first-split datetime (prefs.splitFirstTime) to a
+   * seconds offset relative to the open file's start_time.
+   * Returns 0 when no first-split time is set or when the file has no start_time.
+   */
+  function computeSplitFirstOffsetS(): number {
+    if (!prefs.splitFirstTime || !metadata?.start_time) return 0;
+    try {
+      const splitMs = new Date(prefs.splitFirstTime).getTime();
+      const startMs = new Date(metadata.start_time).getTime();
+      return Math.max(0, (splitMs - startMs) / 1000);
+    } catch {
+      return 0;
     }
   }
 
@@ -444,6 +476,8 @@
   {#if showPreferences}
     <PreferencesDialog
       {prefs}
+      fileStartTime={metadata?.start_time ?? null}
+      fileEndTime={metadata?.end_time ?? null}
       onchange={(p) => { prefs = p; }}
       onclose={() => (showPreferences = false)}
     />
@@ -460,6 +494,11 @@
       totalSignals={totalPhysicalSignals}
       initialFormat={lastExportFormat}
       initialFolder={lastOutputFolder}
+      splitMode={prefs.splitMode}
+      splitSizeMB={prefs.splitSizeMB}
+      splitPeriodS={prefs.splitPeriodS}
+      splitFirstTime={prefs.splitFirstTime}
+      splitFirstOffsetS={computeSplitFirstOffsetS()}
       onfmtchange={(fmt) => { lastExportFormat = fmt; }}
       onfolderchange={(folder) => { lastOutputFolder = folder; }}
       onclose={() => (showExport = false)}
