@@ -352,42 +352,103 @@ def _to_absolute(rel_or_abs: str, base_dir: str) -> str:
     return os.path.normpath(os.path.join(base_dir, rel_or_abs))
 
 
-def _copy_dbc_to_dir(dbc_abs: str, dest_dir: str) -> str:
+def _copy_dbc_to_dir(
+    dbc_abs: str,
+    dest_dir: str,
+    resolutions: "dict[str, str] | None" = None,
+) -> str:
     """Copy *dbc_abs* into *dest_dir* and return the resulting filename.
 
     If the source file is already inside *dest_dir* no copy is made and the
-    bare filename is returned.  Name collisions are resolved by appending
-    ``_1``, ``_2``, … before the extension.  When the source file does not
-    exist the function falls back to a plain relative path without copying.
+    bare filename is returned.
+
+    When a file with the same name already exists in *dest_dir*, the action
+    is controlled by *resolutions* — a ``{filename: action}`` dict where
+    *action* is one of:
+
+    ``"overwrite"``
+        Replace the existing file with the source.
+    ``"skip"``
+        Leave the existing file untouched and reference it by its current
+        filename.
+    ``"rename"`` (default when the filename is absent from *resolutions*)
+        Append ``_1``, ``_2``, … to avoid the collision.
+
+    When the source file does not exist the function falls back to a plain
+    relative path without copying.
     """
     import shutil
 
     if not os.path.isfile(dbc_abs):
-        # Cannot copy a non-existent file — store a relative path instead.
         return _to_relative(dbc_abs, dest_dir)
 
     filename = os.path.basename(dbc_abs)
     dest     = os.path.join(dest_dir, filename)
 
-    # Already the same file?
+    # Already the same file — nothing to do.
     try:
         if os.path.exists(dest) and os.path.samefile(dbc_abs, dest):
             return filename
     except (OSError, ValueError):
         pass
 
-    # Resolve filename collision.
     if os.path.exists(dest):
-        stem, ext = os.path.splitext(filename)
-        i = 1
-        while os.path.exists(os.path.join(dest_dir, f"{stem}_{i}{ext}")):
-            i += 1
-        filename = f"{stem}_{i}{ext}"
-        dest = os.path.join(dest_dir, filename)
+        action = (resolutions or {}).get(filename, "rename")
+        if action == "skip":
+            # Keep the existing file; just reference it by its bare name.
+            return filename
+        elif action == "overwrite":
+            pass  # fall through: shutil.copy2 will overwrite
+        else:  # "rename"
+            stem, ext = os.path.splitext(filename)
+            i = 1
+            while os.path.exists(os.path.join(dest_dir, f"{stem}_{i}{ext}")):
+                i += 1
+            filename = f"{stem}_{i}{ext}"
+            dest = os.path.join(dest_dir, filename)
 
     os.makedirs(dest_dir, exist_ok=True)
     shutil.copy2(dbc_abs, dest)
     return filename
+
+
+def handle_check_copy_conflicts(req: dict) -> dict:
+    """Return the list of DBC basenames that would collide if saved with mode=copy.
+
+    Params: ``path`` (target config file path), ``config`` (the AppConfig dict).
+    Returns: ``{ conflicts: [{db_path, filename}] }``.
+    """
+    params     = req.get("params", {})
+    file_path  = str(params.get("path") or "").strip()
+    config     = params.get("config") or {}
+
+    if not file_path:
+        return _ok(req, {"conflicts": []})
+
+    config_dir = os.path.dirname(os.path.abspath(file_path))
+    conflicts: list[dict] = []
+    seen: set[str] = set()
+
+    for entry in config.get("decoding", []):
+        db_path = str(entry.get("db_path") or "").strip()
+        if not db_path or not os.path.isfile(db_path):
+            continue
+        filename = os.path.basename(db_path)
+        if filename in seen:
+            continue
+        seen.add(filename)
+        dest = os.path.join(config_dir, filename)
+        if not os.path.exists(dest):
+            continue
+        # Same file already there — not a conflict.
+        try:
+            if os.path.samefile(db_path, dest):
+                continue
+        except (OSError, ValueError):
+            pass
+        conflicts.append({"db_path": db_path, "filename": filename})
+
+    return _ok(req, {"conflicts": conflicts})
 
 
 def handle_save_config(req: dict) -> dict:
@@ -414,10 +475,11 @@ def handle_save_config(req: dict) -> dict:
     """
     import copy
 
-    params        = req.get("params", {})
-    file_path     = str(params.get("path", "")).strip()
-    config        = params.get("config")
-    dbc_path_mode = str(params.get("dbc_path_mode", "relative")).strip()
+    params           = req.get("params", {})
+    file_path        = str(params.get("path", "")).strip()
+    config           = params.get("config")
+    dbc_path_mode    = str(params.get("dbc_path_mode", "relative")).strip()
+    copy_resolutions = params.get("copy_resolutions") or {}  # {filename: "overwrite"|"skip"}
     if not file_path:
         return _err(req, 1010, "params.path is required")
     if dbc_path_mode not in ("absolute", "relative", "copy"):
@@ -436,7 +498,7 @@ def handle_save_config(req: dict) -> dict:
         if dbc_path_mode == "absolute":
             entry["db_path"] = os.path.normpath(raw).replace("\\", "/")
         elif dbc_path_mode == "copy":
-            entry["db_path"] = _copy_dbc_to_dir(raw, config_dir)
+            entry["db_path"] = _copy_dbc_to_dir(raw, config_dir, copy_resolutions)
         else:  # "relative"
             entry["db_path"] = _to_relative(raw, config_dir)
 
@@ -501,6 +563,7 @@ HANDLERS: dict[str, Any] = {
     "debug_bus_detection":       handle_debug_bus_detection,
     "save_config":               handle_save_config,
     "load_config":               handle_load_config,
+    "check_copy_conflicts":      handle_check_copy_conflicts,
 }
 
 

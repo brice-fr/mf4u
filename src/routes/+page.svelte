@@ -3,8 +3,8 @@
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
   import { Menu, Submenu, MenuItem, CheckMenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
   import { onMount } from "svelte";
-  import { openFile, getStructure, closeSession, saveConfig, loadConfig } from "$lib/rpc";
-  import type { Metadata, GroupInfo, DbAssignment, FilteredChannel, AppConfig, ExportFormat, DbcPathMode } from "$lib/rpc";
+  import { openFile, getStructure, closeSession, saveConfig, loadConfig, checkCopyConflicts } from "$lib/rpc";
+  import type { Metadata, GroupInfo, DbAssignment, FilteredChannel, AppConfig, ExportFormat, DbcPathMode, CopyConflict, CopyResolution } from "$lib/rpc";
   import { loadPrefs, savePrefs } from "$lib/prefs";
   import type { AppPrefs } from "$lib/prefs";
   import MetadataPanel from "$lib/components/MetadataPanel.svelte";
@@ -15,6 +15,7 @@
   import PreferencesDialog from "$lib/components/PreferencesDialog.svelte";
   import AboutDialog from "$lib/components/AboutDialog.svelte";
   import SaveConfigDialog from "$lib/components/SaveConfigDialog.svelte";
+  import CopyConflictDialog from "$lib/components/CopyConflictDialog.svelte";
   import Toolbar from "$lib/components/Toolbar.svelte";
 
   // ── state ─────────────────────────────────────────────────────────────── //
@@ -30,7 +31,11 @@
   let showFrameDecoding: boolean  = $state(false);
   let showChannelFilter: boolean  = $state(false);
   let showPreferences:   boolean  = $state(false);
-  let showSaveConfig:    boolean  = $state(false);
+  let showSaveConfig:      boolean         = $state(false);
+  let showCopyConflict:    boolean         = $state(false);
+  let copyConflicts:       CopyConflict[]  = $state([]);
+  let pendingSavePath:     string          = $state("");
+  let pendingSaveDbcMode:  DbcPathMode     = $state("copy");
   let flatten:           boolean  = $state(false);
 
   // ── App-wide preferences (persisted in localStorage) ──────────────────── //
@@ -283,8 +288,40 @@
 
   async function handleSaveConfig(path: string, mode: DbcPathMode) {
     showSaveConfig = false;
+
+    if (mode === "copy") {
+      // Pre-flight: check for files that already exist in the config folder.
+      try {
+        const { conflicts } = await checkCopyConflicts(path, buildConfig());
+        if (conflicts.length > 0) {
+          copyConflicts      = conflicts;
+          pendingSavePath    = path;
+          pendingSaveDbcMode = mode;
+          showCopyConflict   = true;
+          return;  // wait for the user to resolve conflicts
+        }
+      } catch {
+        // If the pre-check fails just proceed without the dialog.
+      }
+    }
+
+    await doSaveConfigFinal(path, mode);
+  }
+
+  async function handleCopyConflictResolution(
+    resolutions: Record<string, CopyResolution>,
+  ) {
+    showCopyConflict = false;
+    await doSaveConfigFinal(pendingSavePath, pendingSaveDbcMode, resolutions);
+  }
+
+  async function doSaveConfigFinal(
+    path: string,
+    mode: DbcPathMode,
+    copyResolutions?: Record<string, CopyResolution>,
+  ) {
     try {
-      await saveConfig(path, buildConfig(), mode);
+      await saveConfig(path, buildConfig(), mode, copyResolutions);
       showToast("Configuration saved.");
     } catch (e) {
       showToast(`Save failed: ${e}`);
@@ -470,6 +507,14 @@
     <SaveConfigDialog
       onconfirm={handleSaveConfig}
       oncancel={() => { showSaveConfig = false; }}
+    />
+  {/if}
+
+  {#if showCopyConflict}
+    <CopyConflictDialog
+      conflicts={copyConflicts}
+      onconfirm={handleCopyConflictResolution}
+      oncancel={() => { showCopyConflict = false; }}
     />
   {/if}
 

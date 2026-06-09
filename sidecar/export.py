@@ -1409,8 +1409,10 @@ def _absolute_suffix(t_mdf_s: float, recording_start: Any) -> str:
     MDF header (``mdf.header.start_time``); adding *t_mdf_s* to it gives the
     absolute point in time for this chunk's start.
 
-    Timezone info is stripped before formatting so the output matches the
-    time as recorded in the file header (no implicit UTC conversion).
+    When *recording_start* is timezone-aware (asammdf typically stores it as UTC),
+    the result is converted to the **local timezone** before formatting so that
+    the filename suffix matches the wall-clock time the user sees in the UI.
+    Naive datetimes are formatted as-is.
     Falls back to a zero-padded seconds offset when *recording_start* is
     unavailable or the conversion fails.
     """
@@ -1419,9 +1421,9 @@ def _absolute_suffix(t_mdf_s: float, recording_start: Any) -> str:
     try:
         from datetime import timedelta
         abs_dt = recording_start + timedelta(seconds=t_mdf_s)
-        # Strip any timezone info — format the time exactly as stored in the header.
         if getattr(abs_dt, "tzinfo", None) is not None:
-            abs_dt = abs_dt.replace(tzinfo=None)
+            # Convert UTC (or any aware tz) → machine-local time, then drop tz.
+            abs_dt = abs_dt.astimezone().replace(tzinfo=None)
         return abs_dt.strftime("_%y%m%d_%H%M%S")
     except Exception:  # noqa: BLE001
         return f"_T{int(t_mdf_s):05d}s"

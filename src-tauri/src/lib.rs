@@ -197,16 +197,32 @@ async fn save_config(
     path: String,
     config: Value,
     dbc_path_mode: Option<String>,
+    copy_resolutions: Option<Value>,
     sidecar: tauri::State<'_, Mutex<Sidecar>>,
 ) -> Result<Value, String> {
     rpc_call(
         &sidecar,
         "save_config",
         json!({
-            "path":          path,
-            "config":        config,
-            "dbc_path_mode": dbc_path_mode.unwrap_or_else(|| "relative".to_string()),
+            "path":             path,
+            "config":           config,
+            "dbc_path_mode":    dbc_path_mode.unwrap_or_else(|| "relative".to_string()),
+            "copy_resolutions": copy_resolutions,
         }),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn check_copy_conflicts(
+    path: String,
+    config: Value,
+    sidecar: tauri::State<'_, Mutex<Sidecar>>,
+) -> Result<Value, String> {
+    rpc_call(
+        &sidecar,
+        "check_copy_conflicts",
+        json!({ "path": path, "config": config }),
     )
     .await
 }
@@ -250,6 +266,7 @@ pub fn run() {
             get_exportable_signals,
             save_config,
             load_config,
+            check_copy_conflicts,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

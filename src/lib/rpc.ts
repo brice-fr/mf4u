@@ -264,17 +264,38 @@ export async function cancelExport(jobId: string): Promise<void> {
 /** How DBC / ARXML file paths are stored in a saved config. */
 export type DbcPathMode = "absolute" | "relative" | "copy";
 
+/** Per-file conflict resolution for the "copy" DBC path mode. */
+export type CopyResolution = "overwrite" | "skip" | "rename";
+
+/** A DBC file that would collide with an existing file in the config folder. */
+export interface CopyConflict {
+  db_path:  string;   // absolute source path
+  filename: string;   // basename (the colliding name in the config dir)
+}
+
 export async function saveConfig(
   path: string,
   config: AppConfig,
   dbcPathMode: DbcPathMode = "relative",
+  copyResolutions?: Record<string, CopyResolution>,
 ): Promise<void> {
-  await invoke("save_config", { path, config, dbcPathMode });
+  await invoke("save_config", {
+    path, config, dbcPathMode,
+    copyResolutions: copyResolutions ?? null,
+  });
 }
 
 export async function loadConfig(path: string): Promise<AppConfig> {
   const r = await invoke<{ config: AppConfig }>("load_config", { path });
   return r.config;
+}
+
+/** Check which DBC files would collide if saved with mode="copy". */
+export async function checkCopyConflicts(
+  path: string,
+  config: AppConfig,
+): Promise<{ conflicts: CopyConflict[] }> {
+  return invoke("check_copy_conflicts", { path, config });
 }
 
 // -------------------------------------------------------------------------- //

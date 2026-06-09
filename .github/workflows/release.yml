@@ -249,6 +249,14 @@ jobs:
 
             ---
 
+            ### What's new in v0.3.3
+
+            #### Bug fixes
+            - Split output: chunk file suffixes now use the machine's **local timezone** instead of UTC. Previously, a recording made at midnight CEST (UTC+2) would produce `_YYMMDD_220000` suffixes instead of `_YYMMDD_000000`. The fix applies to both **By time** and **By size** split modes. **No splitting** mode is unaffected (no suffix is generated).
+            - Config save (copy mode): when a DBC file already exists in the config folder, a dialog now asks whether to **overwrite** it or **skip** the copy (keep the existing file). An **Apply to all** checkbox skips the prompt for all remaining conflicts and applies the same choice. Previously, conflicting files were silently renamed (`can_bus_1.dbc`, etc.).
+
+            ---
+
             ### What's new in v0.3.2
 
             #### Output splitting
