@@ -257,6 +257,28 @@
     }
   }
 
+  // ── row tooltip ───────────────────────────────────────────────────────── //
+
+  let tooltipText    = $state("");
+  let tooltipX       = $state(0);
+  let tooltipY       = $state(0);
+  let tooltipVisible = $state(false);
+
+  function onRowEnter(e: MouseEvent, ch: DisplayChannel) {
+    tooltipText    = `${ch.acq_name || "—"} / ${ch.channel_name}`;
+    tooltipX       = e.clientX;
+    tooltipY       = e.clientY;
+    tooltipVisible = true;
+  }
+  function onRowMove(e: MouseEvent) {
+    if (!tooltipVisible) return;
+    tooltipX = e.clientX;
+    tooltipY = e.clientY;
+  }
+  function onRowLeave() {
+    tooltipVisible = false;
+  }
+
   // ── close / apply ─────────────────────────────────────────────────────── //
 
   function applyAndClose() {
@@ -455,6 +477,9 @@
                 class:ch-ghost={ch.ghost}
                 onclick={() => toggleExport(ch.key)}
                 onkeydown={(e) => e.key === "Enter" && toggleExport(ch.key)}
+                onmouseenter={(e) => onRowEnter(e, ch)}
+                onmousemove={onRowMove}
+                onmouseleave={onRowLeave}
                 role="option"
                 aria-selected={selectedExport.has(ch.key)}
                 tabindex="0"
@@ -503,6 +528,15 @@
       <button class="btn-primary" onclick={applyAndClose}>Close</button>
     </div>
   </div>
+
+  <!-- channel path tooltip — position:fixed so it escapes the scrollable list -->
+  {#if tooltipVisible && tooltipText}
+    <div
+      class="ch-tooltip"
+      style="left: {tooltipX + 14}px; top: {tooltipY - 32}px;"
+      aria-hidden="true"
+    >{tooltipText}</div>
+  {/if}
 </div>
 
 <style>
@@ -860,4 +894,18 @@
     transition: background 0.12s, border-color 0.12s;
   }
   .btn-primary:hover { background: #81aaff; border-color: #81aaff; }
+
+  .ch-tooltip {
+    position: fixed;
+    background: #2a2a2a;
+    border: 1px solid #444;
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 0.7rem;
+    color: #ccc;
+    white-space: nowrap;
+    z-index: 1000;
+    pointer-events: none;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  }
 </style>

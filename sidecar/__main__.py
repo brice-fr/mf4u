@@ -521,6 +521,10 @@ def handle_load_config(req: dict) -> dict:
     Relative ``decoding[].db_path`` values and ``output_folder`` are resolved
     to absolute paths against the config file's directory before returning,
     so the rest of the application always works with absolute paths.
+
+    If the resolved ``output_folder`` directory does not exist on this
+    machine, it is silently reset to ``""`` (the "none saved" default)
+    rather than surfacing an error.
     """
     params    = req.get("params", {})
     file_path = str(params.get("path", "")).strip()
@@ -541,10 +545,13 @@ def handle_load_config(req: dict) -> dict:
         if raw:
             entry["db_path"] = _to_absolute(raw, config_dir)
 
-    # Resolve relative output folder back to absolute.
+    # Resolve relative output folder back to absolute, falling back silently
+    # to the default (none saved) if the resolved directory no longer exists
+    # — e.g. the config was shared/moved or the folder was deleted.
     raw_folder = str(config.get("output_folder") or "").strip()
     if raw_folder:
-        config["output_folder"] = _to_absolute(raw_folder, config_dir)
+        resolved = _to_absolute(raw_folder, config_dir)
+        config["output_folder"] = resolved if os.path.isdir(resolved) else ""
 
     return _ok(req, {"config": config})
 

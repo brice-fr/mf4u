@@ -220,6 +220,7 @@ class TestLoadConfig:
 
     def test_relative_output_folder_resolved(self, tmp_path):
         cfg_path = str(tmp_path / "config.mf4u")
+        os.makedirs(str(tmp_path / "exports"))
         self._write_raw(cfg_path, {
             "version": 1, "decoding": [],
             "channel_filter": None, "flatten": False,
@@ -231,6 +232,19 @@ class TestLoadConfig:
         folder = resp["result"]["config"]["output_folder"]
         assert os.path.isabs(folder)
         assert folder == os.path.normpath(str(tmp_path / "exports"))
+
+    def test_missing_output_folder_falls_back_to_default(self, tmp_path):
+        """If the saved output folder no longer exists, silently reset to ""."""
+        cfg_path = str(tmp_path / "config.mf4u")
+        self._write_raw(cfg_path, {
+            "version": 1, "decoding": [],
+            "channel_filter": None, "flatten": False,
+            "export_format": "csv",
+            "output_folder": "exports",  # never created on disk
+            "mat_link_groups": False,
+        })
+        resp = sidecar.handle_load_config(_load_req(cfg_path))
+        assert resp["result"]["config"]["output_folder"] == ""
 
     def test_absolute_dbc_preserved(self, tmp_path):
         cfg_path = str(tmp_path / "config.mf4u")
@@ -263,6 +277,7 @@ class TestLoadConfig:
         cfg_path   = str(tmp_path / "config.mf4u")
         dbc_path   = str(tmp_path / "dbs" / "can_bus.dbc")
         out_folder = str(tmp_path / "exports")
+        os.makedirs(out_folder)
         config = {
             "version": 1,
             "decoding": [{"group_index": 0, "group_name": "CAN1", "db_path": dbc_path}],
