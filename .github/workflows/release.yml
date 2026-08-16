@@ -376,16 +376,16 @@ jobs:
           # transfer rc3: dmg stapled and spctl-accepted, same file passed on a
           # real Mac). Report it as a warning only; spctl is the real gate.
           apps=(target/*/release/bundle/macos/*.app)
-          for app in "${apps[@]}"; do
-            echo "::group::syspolicy_check $(basename "$app")"
-            if command -v syspolicy_check >/dev/null 2>&1; then
+          # Guard needed: nullglob produces an empty array, and set -u treats
+          # "${empty_array[@]}" as unbound variable.
+          if [ ${#apps[@]} -gt 0 ] && command -v syspolicy_check >/dev/null 2>&1; then
+            for app in "${apps[@]}"; do
+              echo "::group::syspolicy_check $(basename "$app")"
               syspolicy_check distribution "$app" \
                 || echo "::warning::syspolicy_check failed on $(basename "$app") — verify on a real Mac before publishing"
-            else
-              echo "  syspolicy_check not available (needs macOS 14+); skipped" >&2
-            fi
-            echo "::endgroup::"
-          done
+              echo "::endgroup::"
+            done
+          fi
 
           # ── notarise, staple and verify each dmg ────────────────────────────
           dmgs=(target/*/release/bundle/dmg/*.dmg)
