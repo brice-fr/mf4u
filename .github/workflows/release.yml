@@ -347,6 +347,63 @@ jobs:
             --target universal-apple-darwin
             --config /tmp/tauri-macos.conf.json
 
+      # ── Notarise and staple the disk images ────────────────────────────────
+      # tauri-action notarises and staples the .app, then wraps it in a dmg —
+      # but nothing ever submits the dmg itself, so it ships unnotarised.
+      # Measured on hex-studio v0.3.3: the .app inside was "Notarized Developer
+      # ID" while the dmg around it was "Unnotarized Developer ID", and
+      # syspolicy_check flagged it as "Notary Ticket Missing … Severity: Fatal".
+      #
+      # This step notarises each dmg, staples the ticket, asserts with spctl
+      # and syspolicy_check (Apple's own pre-distribution checker — exits 70 on
+      # failure), then replaces the already-uploaded asset with the stapled copy.
+      # Failing here is intentional: a green build that ships an unstapled dmg
+      # is worse than a red build that stops and says why.
+      - name: Notarise and staple the disk images
+        env:
+          GITHUB_TOKEN:   ${{ secrets.GITHUB_TOKEN }}
+          APPLE_ID:       ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID:  ${{ secrets.APPLE_TEAM_ID }}
+          TAG:            ${{ github.ref_name || github.event.inputs.tag_name }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          # ── verify the .app bundles tauri-action already notarised ──────────
+          apps=(target/*/release/bundle/macos/*.app)
+          for app in "${apps[@]}"; do
+            echo "::group::syspolicy_check $(basename "$app")"
+            if command -v syspolicy_check >/dev/null 2>&1; then
+              syspolicy_check distribution "$app"
+            else
+              echo "  syspolicy_check not available (needs macOS 14+); skipped" >&2
+            fi
+            echo "::endgroup::"
+          done
+
+          # ── notarise, staple and verify each dmg ────────────────────────────
+          dmgs=(target/*/release/bundle/dmg/*.dmg)
+          if [ ${#dmgs[@]} -eq 0 ]; then
+            echo "No dmg under target/*/release/bundle/dmg/ — did the bundle step change?" >&2
+            exit 1
+          fi
+          for dmg in "${dmgs[@]}"; do
+            echo "::group::$(basename "$dmg")"
+            xcrun notarytool submit "$dmg" \
+              --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" --wait
+            xcrun stapler staple "$dmg"
+            spctl -a -vvv -t install "$dmg"
+            if command -v syspolicy_check >/dev/null 2>&1; then
+              syspolicy_check distribution "$dmg"
+            else
+              echo "  syspolicy_check not available (needs macOS 14+); skipped" >&2
+            fi
+            gh release upload "$TAG" "$dmg" --clobber --repo "$GITHUB_REPOSITORY"
+            echo "::endgroup::"
+          done
+
       # ── Always remove the temporary keychain ────────────────────────────────
       - name: Clean up keychain
         if: always()
