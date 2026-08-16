@@ -371,11 +371,16 @@ jobs:
           shopt -s nullglob
 
           # ── verify the .app bundles tauri-action already notarised ──────────
+          # syspolicy_check raises "Internal Xprotect Error — Fatal" on the
+          # GitHub runner even for good artefacts (confirmed on garmin-file-
+          # transfer rc3: dmg stapled and spctl-accepted, same file passed on a
+          # real Mac). Report it as a warning only; spctl is the real gate.
           apps=(target/*/release/bundle/macos/*.app)
           for app in "${apps[@]}"; do
             echo "::group::syspolicy_check $(basename "$app")"
             if command -v syspolicy_check >/dev/null 2>&1; then
-              syspolicy_check distribution "$app"
+              syspolicy_check distribution "$app" \
+                || echo "::warning::syspolicy_check failed on $(basename "$app") — verify on a real Mac before publishing"
             else
               echo "  syspolicy_check not available (needs macOS 14+); skipped" >&2
             fi
@@ -394,13 +399,20 @@ jobs:
               --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
               --team-id "$APPLE_TEAM_ID" --wait
             xcrun stapler staple "$dmg"
+            # spctl is the real gate: it catches unnotarised artefacts and
+            # behaves correctly on the runner (unlike syspolicy_check, below).
             spctl -a -vvv -t install "$dmg"
+            # Upload the stapled file now, before the warning-only check below,
+            # so that a non-zero syspolicy_check exit cannot leave the release
+            # holding the pre-staple artefact.
+            gh release upload "$TAG" "$dmg" --clobber --repo "$GITHUB_REPOSITORY"
+            # syspolicy_check is informational here; gate on it locally instead.
             if command -v syspolicy_check >/dev/null 2>&1; then
-              syspolicy_check distribution "$dmg"
+              syspolicy_check distribution "$dmg" \
+                || echo "::warning::syspolicy_check failed on $(basename "$dmg") — verify on a real Mac before publishing"
             else
               echo "  syspolicy_check not available (needs macOS 14+); skipped" >&2
             fi
-            gh release upload "$TAG" "$dmg" --clobber --repo "$GITHUB_REPOSITORY"
             echo "::endgroup::"
           done
 
