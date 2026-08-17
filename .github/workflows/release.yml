@@ -375,7 +375,9 @@ jobs:
           # GitHub runner even for good artefacts (confirmed on garmin-file-
           # transfer rc3: dmg stapled and spctl-accepted, same file passed on a
           # real Mac). Report it as a warning only; spctl is the real gate.
-          apps=(target/*/release/bundle/macos/*.app)
+          # mf4u has no root Cargo.toml — cargo workspace root is src-tauri/,
+          # so all bundle output lands under src-tauri/target/, not target/.
+          apps=(src-tauri/target/*/release/bundle/macos/*.app)
           # Guard needed: nullglob produces an empty array, and set -u treats
           # "${empty_array[@]}" as unbound variable.
           if [ ${#apps[@]} -gt 0 ] && command -v syspolicy_check >/dev/null 2>&1; then
@@ -388,9 +390,9 @@ jobs:
           fi
 
           # ── notarise, staple and verify each dmg ────────────────────────────
-          dmgs=(target/*/release/bundle/dmg/*.dmg)
+          dmgs=(src-tauri/target/*/release/bundle/dmg/*.dmg)
           if [ ${#dmgs[@]} -eq 0 ]; then
-            echo "No dmg under target/*/release/bundle/dmg/ — did the bundle step change?" >&2
+            echo "No dmg under src-tauri/target/*/release/bundle/dmg/ — did the bundle step change?" >&2
             exit 1
           fi
           for dmg in "${dmgs[@]}"; do
